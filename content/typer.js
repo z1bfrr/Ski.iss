@@ -1,26 +1,39 @@
 // content/typer.js
-// Utility: type text into a CodeMirror editor instance character by character.
-// Used as a fallback if the inline func injection fails.
+// Fallback utility: type text into an Ace editor character by character.
+// Called if the inline func injection in worker.js cannot locate the editor instance.
 
-window.__skillrackTyper = function(code, delayMs = 12) {
+window.__skillIssueTyper = function(code, delayMs = 12) {
   return new Promise((resolve, reject) => {
-    const cmEl = document.querySelector('.CodeMirror');
-    if (!cmEl || !cmEl.CodeMirror) {
-      reject(new Error('CodeMirror not found'));
+    const aceEl = document.querySelector('.ace_editor');
+    if (!aceEl) {
+      reject(new Error('Ace editor not found on this page.'));
       return;
     }
 
-    const cm = cmEl.CodeMirror;
-    cm.focus();
-    cm.setValue('');
-    cm.setCursor({ line: 0, ch: 0 });
+    // Attempt to get the Ace editor JS instance
+    let ed = null;
+    if (aceEl.env && aceEl.env.editor) ed = aceEl.env.editor;
+    if (!ed && window.ace && aceEl.id) { try { ed = window.ace.edit(aceEl.id); } catch(e) {} }
+    if (!ed && window.ace)             { try { ed = window.ace.edit(aceEl);    } catch(e) {} }
+    if (!ed && window.editor && typeof window.editor.insert === 'function') ed = window.editor;
+
+    if (!ed || typeof ed.getSession !== 'function') {
+      reject(new Error('Could not get Ace editor instance.'));
+      return;
+    }
+
+    // Clear existing content and type char by char
+    try { ed.getSession().setValue(''); } catch(e) {}
+    try { ed.clearSelection(); }         catch(e) {}
+    try { ed.focus(); }                  catch(e) {}
 
     const chars = [...code]; // Unicode-safe split
     let i = 0;
 
     function next() {
       if (i >= chars.length) { resolve(); return; }
-      cm.replaceSelection(chars[i++]);
+      try { ed.insert(chars[i]); } catch(e) {}
+      i++;
       setTimeout(next, delayMs);
     }
     next();
