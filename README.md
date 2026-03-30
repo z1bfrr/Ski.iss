@@ -1,21 +1,138 @@
-# Skill Issue 🧠
+███████╗██╗  ██╗██╗██╗     ██╗     ██╗███████╗███████╗██╗   ██╗███████╗
+██╔════╝██║ ██╔╝██║██║     ██║     ██║██╔════╝██╔════╝██║   ██║██╔════╝
+███████╗█████╔╝ ██║██║     ██║     ██║█████╗  ███████╗██║   ██║█████╗  
+╚════██║██╔═██╗ ██║██║     ██║     ██║██╔══╝  ╚════██║██║   ██║██╔══╝  
+███████║██║  ██╗██║███████╗███████╗██║███████╗███████║╚██████╔╝███████╗
+╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝╚══════╝╚══════╝ ╚═════╝ ╚══════╝
 
-A Chrome extension that auto-reads SkillRack coding problems and types out AI-generated solutions directly into the editor.
+⚡ Overview
 
-## Features
-- Scrapes problem statement from SkillRack
-- Sends it to Groq API for a code solution
-- Auto-types the solution into the SkillRack code editor (iframe)
-- Handles code injection and submission flow
 
-## Setup
-1. Clone this repo
-2. Open Chrome → `chrome://extensions`
-3. Enable **Developer Mode**
-4. Click **Load unpacked** → select this folder
-5. Add your Groq API key in the popup
+Skill Issue
+ is a Chrome extension that automatically reads SkillRack coding 
+problems and generates solutions using AI — then types them directly 
+into the editor.
 
-## Tech
-- Manifest V3 Chrome Extension
-- Groq API (LLM code generation)
-- Content scripts + background service worker
+
+
+✨ Features
+
+
+
+
+Problem extraction from SkillRack
+
+
+
+
+AI-powered code generation (Groq)
+
+
+
+
+Automatic typing into editor (iframe support)
+
+
+
+
+One-click solve workflow
+
+
+
+
+
+🛠 Tech
+
+
+
+
+Chrome Extension (Manifest V3)
+
+
+
+
+JavaScript (Content Scripts + Service Worker)
+
+
+
+
+Groq API (LLM inference)
+
+
+
+
+
+🚀 Setup
+
+
+
+git clone https://github.com/your-username/skill-issue.git
+
+
+
+
+
+Open chrome://extensions/
+
+
+
+
+Enable Developer Mode
+
+
+
+
+Click Load Unpacked → select project folder
+
+
+
+
+
+🔑 Configuration
+
+
+Add your Groq API key via the extension popup.
+
+
+
+▶ Usage
+
+
+
+
+Open a SkillRack problem
+
+
+
+
+Run the extension
+
+
+
+
+Code is generated and typed automatically
+
+
+
+
+Submit
+
+
+
+
+
+⚠️ Note
+
+
+For educational use only. Use responsibly.
+
+
+
+🧠 Philosophy
+
+
+
+
+Automate the boring. Focus on what matters.
+
+
