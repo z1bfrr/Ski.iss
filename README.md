@@ -9,7 +9,7 @@
 </pre>
 </p>
 
-⚡ Overview
+#⚡ Overview
 
 
 Skill Issue
@@ -19,7 +19,7 @@ into the editor.
 
 
 
-✨ Features
+#✨ Features
 
 
 
@@ -45,7 +45,7 @@ One-click solve workflow
 
 
 
-🛠 Tech
+#🛠 Tech
 
 
 
@@ -66,7 +66,7 @@ Groq API (LLM inference)
 
 
 
-🚀 Setup
+#🚀 Setup
 
 
 
@@ -92,14 +92,14 @@ Click Load Unpacked → select project folder
 
 
 
-🔑 Configuration
+#🔑 Configuration
 
 
 Add your Groq API key via the extension popup.
 
 
 
-▶ Usage
+#▶ Usage
 
 
 
@@ -125,18 +125,17 @@ Submit
 
 
 
-⚠️ Note
+#⚠️ Note
 
 
 For educational use only. Use responsibly.
 
 
 
-🧠 Philosophy
+#🧠 Philosophy
 
 
 
-
-Automate the boring. Focus on what matters.
+dk to use go to ur mom n cry.
 
 
