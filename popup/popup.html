@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkillRack Solver</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">SkillRack Solver</span>
+      </div>
+      <button class="icon-btn" id="settingsToggle" title="Settings">⚙</button>
+    </header>
+
+    <!-- Main Panel -->
+    <main class="main" id="mainPanel">
+
+      <!-- Status bar -->
+      <div class="status-bar" id="statusBar">
+        <span class="status-dot idle" id="statusDot"></span>
+        <span class="status-text" id="statusText">Ready — open a SkillRack problem</span>
+      </div>
+
+      <!-- Problem preview -->
+      <div class="problem-card" id="problemCard" style="display:none">
+        <div class="problem-label">Problem detected</div>
+        <div class="problem-title" id="problemTitle">—</div>
+        <div class="problem-meta" id="problemMeta"></div>
+      </div>
+
+      <!-- Language selector -->
+      <div class="field">
+        <label class="field-label" for="langSelect">Language</label>
+        <select class="select" id="langSelect">
+          <option value="C">C</option>
+          <option value="C++">C++</option>
+          <option value="Java">Java</option>
+          <option value="Python 3" selected>Python 3</option>
+        </select>
+      </div>
+
+      <!-- Typing speed -->
+      <div class="field">
+        <label class="field-label">
+          Typing speed
+          <span class="speed-label" id="speedLabel">12ms / char</span>
+        </label>
+        <input type="range" class="slider" id="speedSlider"
+               min="2" max="60" value="12" step="1">
+        <div class="slider-hints">
+          <span>Fast</span><span>Slow</span>
+        </div>
+      </div>
+
+      <!-- Action buttons -->
+      <div class="actions">
+        <button class="btn secondary" id="scrapeBtn">🔍 Read Problem</button>
+        <button class="btn primary" id="solveBtn" disabled>⚡ Solve & Type</button>
+      </div>
+
+      <!-- Auto options -->
+      <div class="auto-options">
+        <label class="toggle-row">
+          <input type="checkbox" id="autoRunCheck" checked>
+          <span class="toggle-label">Auto Run after typing</span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" id="autoNextCheck">
+          <span class="toggle-label">Auto Next problem after submit</span>
+        </label>
+      </div>
+
+      <!-- Generated code preview -->
+      <div class="code-block" id="codeBlock" style="display:none">
+        <div class="code-header">
+          <span>Generated code</span>
+          <button class="copy-btn" id="copyBtn">Copy</button>
+        </div>
+        <pre class="code-pre" id="codeContent"></pre>
+      </div>
+
+      <!-- Error display -->
+      <div class="error-box" id="errorBox" style="display:none">
+        <span class="error-icon">⚠</span>
+        <span id="errorText"></span>
+      </div>
+
+    </main>
+
+    <!-- Settings Panel -->
+    <div class="settings-panel" id="settingsPanel" style="display:none">
+      <h2 class="settings-title">⚙ Settings</h2>
+
+      <div class="field">
+        <label class="field-label" for="apiKeyInput">
+          Groq API Key <span style="color:var(--accent);font-size:10px">(FREE)</span>
+        </label>
+        <div class="input-wrapper">
+          <input type="password" class="input" id="apiKeyInput" placeholder="gsk_...">
+          <button class="eye-btn" id="toggleApiKey" title="Show/Hide key">👁</button>
+        </div>
+      </div>
+
+      <button class="btn primary full" id="saveSettingsBtn">Save Settings</button>
+
+      <a class="get-key-link" href="https://console.groq.com/keys" target="_blank">
+        🔗 Get free Groq key → console.groq.com
+      </a>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-info">
+        <div class="info-row">
+          <span class="info-icon">🔒</span>
+          <span>Key stored locally in Chrome only — never shared.</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">🆓</span>
+          <span>Groq is <strong style="color:var(--accent)">100% FREE</strong> — just email signup, no credit card ever.</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">⚡</span>
+          <span>Uses Llama 3.3 70B — faster &amp; smarter than GPT-3.5 for coding.</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
