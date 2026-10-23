@@ -125,11 +125,15 @@
       </div>
 
       <div class="field">
-        <label class="field-label" for="modelSelect">AI Model</label>
+        <label class="field-label" for="modelSelect">
+          AI Model
+          <button class="icon-btn" id="refreshModelsBtn" title="Fetch live models from Groq" style="font-size:11px;padding:1px 6px;">🔄 Sync</button>
+        </label>
         <select class="select" id="modelSelect">
-          <option value="llama-3.3-70b-versatile" selected>Llama 3.3 70B (Recommended)</option>
-          <option value="llama-3.1-8b-instant">Llama 3.1 8B (Ultra Fast)</option>
-          <option value="qwen-2.5-coder-32b">Qwen 2.5 Coder 32B</option>
+          <option value="llama-3.3-70b-versatile" selected>Llama 3.3 70B (Best Accuracy)</option>
+          <option value="openai/gpt-oss-120b">GPT-OSS 120B (Top Reasoning)</option>
+          <option value="openai/gpt-oss-20b">GPT-OSS 20B (Lowest Token Cost)</option>
+          <option value="qwen/qwen3.8-27b">Qwen 3.8 27B (Coder)</option>
         </select>
       </div>
 

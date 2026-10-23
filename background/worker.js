@@ -77,6 +77,23 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
           break;
         }
 
+        case 'FETCH_MODELS': {
+          const { groqKey } = await chrome.storage.local.get('groqKey');
+          const key = msg.payload?.groqKey || groqKey;
+          if (!key) throw new Error('Enter Groq API key first.');
+          const res = await fetch('https://api.groq.com/openai/v1/models', {
+            headers: { Authorization: `Bearer ${key}` }
+          });
+          if (!res.ok) throw new Error(`Groq auth error (${res.status})`);
+          const data = await res.json();
+          const models = (data.data || [])
+            .map(m => m.id)
+            .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'))
+            .sort();
+          sendResponse({ ok: true, models });
+          break;
+        }
+
         case 'GET_SETTINGS': {
           const s = await chrome.storage.local.get(['groqKey', 'typingSpeed', 'language', 'fillMode', 'modelName']);
           sendResponse(s);
@@ -119,50 +136,48 @@ async function generateSolution(problem, language, userModel) {
   const { groqKey, modelName } = await chrome.storage.local.get(['groqKey', 'modelName']);
   if (!groqKey) throw new Error('No Groq API key set. Open ⚙ Settings and add your key.');
 
-  const system = `You are a competitive programming solver. Output ONLY clean, compilable ${language} code.
-NO explanation, NO markdown backticks, NO comments.
-Read from stdin, write to stdout. Respect exact casing, spaces, and newline rules.
-For Java: use public class Hello with public static void main.
-For C/C++: include standard libraries; use long long for numbers > 10^9.
-For Python 3: handle fast I/O and EOF cleanly.`;
+  const model = userModel || modelName || 'llama-3.3-70b-versatile';
 
-  let prompt = `Title: ${problem.title || ''}\nStatement:\n${problem.statement || ''}\n`;
-  if (problem.constraints) prompt += `Constraints:\n${problem.constraints}\n`;
-  if (problem.inputFormat) prompt += `Input Format:\n${problem.inputFormat}\n`;
-  if (problem.outputFormat) prompt += `Output Format:\n${problem.outputFormat}\n`;
+  // Compact prompt to minimize token burn
+  const system = `Competitive programmer. Return ONLY raw compilable ${language} code solving the task.
+No markdown fences, no comments, no explanation. Stdin->Stdout.
+Java: class Hello. C/C++: standard headers, long long for >10^9. Python: sys.stdin.read().split().`;
 
+  let prompt = `${problem.title ? `Title: ${problem.title}\n` : ''}${problem.statement || ''}\n`;
+  if (problem.constraints) prompt += `Limits: ${problem.constraints}\n`;
+  if (problem.inputFormat) prompt += `InFormat: ${problem.inputFormat}\n`;
+  if (problem.outputFormat) prompt += `OutFormat: ${problem.outputFormat}\n`;
+
+  // Include at most 2 sample cases to conserve token budget
   if (problem.examples?.length) {
-    problem.examples.forEach((e, i) => { prompt += `Example ${i + 1}:\nIn:\n${e.input}\nOut:\n${e.output}\n`; });
+    problem.examples.slice(0, 2).forEach((e, i) => {
+      prompt += `Ex${i + 1}:\nIn:${e.input}\nOut:${e.output}\n`;
+    });
   } else if (problem.sampleInput || problem.sampleOutput) {
-    prompt += `Sample In:\n${problem.sampleInput || ''}\nSample Out:\n${problem.sampleOutput || ''}\n`;
+    prompt += `Sample:\nIn:${problem.sampleInput || ''}\nOut:${problem.sampleOutput || ''}\n`;
   }
-  prompt += `Language: ${language}\nWrite complete working code now:`;
+  prompt += `Language: ${language}. Code:`;
 
-  const models = [userModel || modelName || 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
-  for (const m of models) {
-    try {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-        body: JSON.stringify({
-          model: m,
-          messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
-          temperature: 0.1,
-          max_tokens: 3000
-        })
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error?.message || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      let code = data.choices?.[0]?.message?.content?.trim();
-      if (!code) throw new Error('Empty response');
-      return code.replace(/^```[a-zA-Z0-9_+\-]*\n?/, '').replace(/```\s*$/, '').trim();
-    } catch (e) {
-      if (m === models[models.length - 1]) throw e;
-    }
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 1500
+    })
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `HTTP ${res.status} calling ${model}`);
   }
+
+  const data = await res.json();
+  const code = data.choices?.[0]?.message?.content?.trim();
+  if (!code) throw new Error('Model returned an empty response.');
+  return code.replace(/^```[a-zA-Z0-9_+\-]*\n?/, '').replace(/```\s*$/, '').trim();
 }
 
 async function fillEditor(tabId, code, options) {

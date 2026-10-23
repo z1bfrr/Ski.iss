@@ -29,6 +29,7 @@ const settingsToggle = $('settingsToggle');
 const apiKeyInput    = $('apiKeyInput');
 const toggleApiKey   = $('toggleApiKey');
 const modelSelect    = $('modelSelect');
+const refreshModelsBtn = $('refreshModelsBtn');
 const saveSettingsBtn= $('saveSettingsBtn');
 const autoRunCheck   = $('autoRunCheck');
 const autoNextCheck  = $('autoNextCheck');
@@ -87,6 +88,21 @@ saveSettingsBtn.addEventListener('click', async () => {
   saveSettingsBtn.disabled = false;
   settingsToggle.click();
   setStatus('done', 'Settings saved ✓');
+});
+
+refreshModelsBtn.addEventListener('click', async () => {
+  const key = apiKeyInput.value.trim();
+  if (!key) return showError('Enter Groq key first.');
+  refreshModelsBtn.textContent = '...';
+  const res = await msg({ type: 'FETCH_MODELS', payload: { groqKey: key } });
+  refreshModelsBtn.textContent = '🔄 Sync';
+  if (res.error) return showError(res.error);
+  if (res.models?.length) {
+    const cur = modelSelect.value;
+    modelSelect.innerHTML = res.models.map(m => `<option value="${m}">${m}</option>`).join('');
+    if (res.models.includes(cur)) modelSelect.value = cur;
+    setStatus('done', `Synced ${res.models.length} live models ✓`);
+  }
 });
 
 speedSlider.addEventListener('input', () => {
