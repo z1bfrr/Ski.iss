@@ -199,10 +199,11 @@ async function solveAdditionCaptcha(tabId) {
     const info = results.find(r => r?.result?.found)?.result;
     if (!info) return { solved: false };
 
-    // Solved via direct text math evaluation
+    // Solved via direct text math evaluation (e.g. 31+6= -> 37)
     if (info.solvedText) {
-      await new Promise(r => setTimeout(r, 1200));
-      return { solved: true, sum: info.sum };
+      // Grace pause for SkillRack to transition to code editor
+      await new Promise(r => setTimeout(r, 1800));
+      return { solved: true, sum: info.sum, expr: info.expr };
     }
 
     // Solved via VLM image reading if captcha is an image
@@ -214,20 +215,23 @@ async function solveAdditionCaptcha(tabId) {
           await chrome.scripting.executeScript({
             target: { tabId, allFrames: true },
             func: (val) => {
-              const cap = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]');
+              const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])')];
+              const cap = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]') || inputs[0];
               if (cap) {
+                cap.focus();
                 cap.value = val;
                 cap.dispatchEvent(new Event('input', { bubbles: true }));
                 cap.dispatchEvent(new Event('change', { bubbles: true }));
-                const btn = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.btn')]
-                  .find(b => /(submit|proceed|verify|continue|ok|enter)/i.test(b.textContent || b.value || ''));
+
+                const btn = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')]
+                  .find(b => /(proceed to solve|proceed|solve the program|verify|submit|ok)/i.test(b.textContent || b.value || ''));
                 if (btn) (btn.closest('button, a, input') || btn).click();
               }
             },
             args: [sumVal],
             world: 'MAIN'
           });
-          await new Promise(r => setTimeout(r, 1200));
+          await new Promise(r => setTimeout(r, 1800));
           return { solved: true, sum: sumVal };
         }
       }
@@ -239,30 +243,77 @@ async function solveAdditionCaptcha(tabId) {
 }
 
 function checkAndSolveMathCaptcha() {
-  const capInput = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]');
-  if (!capInput) return { found: false };
+  const allClickables = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a, div[role="button"]')];
+  
+  // 1. Detect "Proceed to Solve the Program" button
+  const proceedBtn = allClickables.find(b => {
+    const t = (b.textContent || b.value || '').trim().toLowerCase();
+    return t.includes('proceed to solve') || t.includes('solve the program') || t.includes('proceed');
+  });
 
-  // 1. Text math search in container, parent, or form
-  const container = capInput.closest('form, div, td, table') || document.body;
-  const containerText = container.innerText || '';
+  // 2. Scan for addition sum pattern like "31+6=" or "31 + 6 = ?" or "31+6"
+  const scanSources = [document.body.innerText, ...[...document.querySelectorAll('pre, code, div, span, p')].map(e => e.innerText)];
+  let mathMatch = null;
 
-  // Look for math addition pattern "A + B"
-  const match = containerText.match(/(\d{1,4})\s*[\+\x2B]\s*(\d{1,4})/);
-  if (match) {
-    const sum = parseInt(match[1], 10) + parseInt(match[2], 10);
-    capInput.value = sum;
-    capInput.dispatchEvent(new Event('input', { bubbles: true }));
-    capInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-    const btn = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.btn, a')]
-      .find(b => /(submit|proceed|verify|continue|ok|enter|go)/i.test(b.textContent || b.value || ''));
-    if (btn) (btn.closest('button, a, input') || btn).click();
-    return { found: true, solvedText: true, sum };
+  for (const text of scanSources) {
+    if (!text) continue;
+    // Matches "31+6=" or "31 + 6 =" or "31+6"
+    const m = text.match(/(\d{1,4})\s*[\+\x2B]\s*(\d{1,4})\s*=?/);
+    if (m) {
+      const a = parseInt(m[1], 10);
+      const b = parseInt(m[2], 10);
+      if (a < 10000 && b < 10000) {
+        mathMatch = m;
+        break;
+      }
+    }
   }
 
-  // 2. Check for captcha image
+  // 3. Find answer input box
+  const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])')];
+  let targetInput = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]');
+
+  if (!targetInput && proceedBtn) {
+    const btnTop = proceedBtn.getBoundingClientRect().top;
+    targetInput = inputs.find(inp => {
+      const rect = inp.getBoundingClientRect();
+      return rect.top < btnTop && rect.top > (btnTop - 300);
+    }) || inputs[0];
+  } else if (!targetInput && inputs.length > 0) {
+    targetInput = inputs[0];
+  }
+
+  // 4. Solve and auto-fill if addition sum found
+  if (targetInput && mathMatch) {
+    const num1 = parseInt(mathMatch[1], 10);
+    const num2 = parseInt(mathMatch[2], 10);
+    const sum = num1 + num2;
+
+    targetInput.focus();
+    targetInput.value = sum;
+    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+    targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+    targetInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', keyCode: 13 }));
+
+    if (proceedBtn) {
+      setTimeout(() => {
+        (proceedBtn.closest('button, a, input') || proceedBtn).click();
+      }, 150);
+    } else {
+      const fallbackBtn = allClickables.find(b => /(submit|proceed|verify|continue|ok|enter)/i.test(b.textContent || b.value || ''));
+      if (fallbackBtn) {
+        setTimeout(() => {
+          (fallbackBtn.closest('button, a, input') || fallbackBtn).click();
+        }, 150);
+      }
+    }
+
+    return { found: true, solvedText: true, sum, expr: `${num1}+${num2}=${sum}` };
+  }
+
+  // 5. Image captcha fallback
   const capImg = document.querySelector('img#capimg, img[src*="cap" i], img[id*="cap" i], img[src*="captcha" i]');
-  if (capImg) {
+  if (capImg && targetInput) {
     try {
       const canvas = document.createElement('canvas');
       canvas.width = capImg.naturalWidth || capImg.width || 140;
@@ -273,7 +324,7 @@ function checkAndSolveMathCaptcha() {
     } catch (e) {}
   }
 
-  return { found: true, inputOnly: true };
+  return { found: false };
 }
 
 async function solveCaptchaWithGroq(apiKey, dataUrl) {
@@ -308,8 +359,16 @@ async function solveCaptchaWithGroq(apiKey, dataUrl) {
 
 // --- CORE ASYNC OPS ---
 async function scrapeTab(tabId) {
-  const results = await chrome.scripting.executeScript({ target: { tabId }, files: ['content/scraper.js'] });
-  const p = results[0]?.result;
+  let results = await chrome.scripting.executeScript({ target: { tabId }, files: ['content/scraper.js'] });
+  let p = results[0]?.result;
+
+  // If addition screen was just bypassed, wait for the actual problem page to finish loading
+  if (p?.isAdditionBypassed) {
+    await new Promise(r => setTimeout(r, 1800));
+    results = await chrome.scripting.executeScript({ target: { tabId }, files: ['content/scraper.js'] });
+    p = results[0]?.result;
+  }
+
   if (!p || (!p.title && !p.statement)) throw new Error('No problem content detected on this page.');
   return p;
 }

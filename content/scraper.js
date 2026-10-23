@@ -12,6 +12,28 @@
       .trim();
   };
 
+  // ─── 0. AUTO-BYPASS ADDITION SUM IF PRESENT ────────────────────────
+  const proceedBtn = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')]
+    .find(b => /(proceed to solve|solve the program|proceed)/i.test((b.textContent || b.value || '').trim()));
+
+  const mathMatch = document.body.innerText.match(/(\d{1,4})\s*[\+\x2B]\s*(\d{1,4})\s*=?/);
+
+  if (proceedBtn && mathMatch) {
+    const sum = parseInt(mathMatch[1], 10) + parseInt(mathMatch[2], 10);
+    const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])')];
+    const inp = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]') || inputs[0];
+
+    if (inp) {
+      inp.focus();
+      inp.value = sum;
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      inp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', keyCode: 13 }));
+      setTimeout(() => { (proceedBtn.closest('button, a, input') || proceedBtn).click(); }, 100);
+      return { isAdditionBypassed: true, sum, expr: `${mathMatch[1]}+${mathMatch[2]}=${sum}` };
+    }
+  }
+
   // ─── 1. TITLE EXTRACTION ───────────────────────────────────────────
   let title = '';
 
