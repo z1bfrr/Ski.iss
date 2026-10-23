@@ -76,7 +76,8 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
           if (msg.payload.autoRun) {
             await new Promise(r => setTimeout(r, 600));
             runRes = await runAndSubmit(tabId, {
-              autoNext: msg.payload.autoNext,
+              autoSubmit: false,
+              autoNext: false,
               skipIfFailed: msg.payload.skipOnFail
             });
             if (runRes.passed) {
@@ -105,7 +106,7 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
           await new Promise(r => setTimeout(r, 600));
 
           // Step 5: Run & Evaluate test cases
-          let runRes = await runAndSubmit(tabId, { autoNext: false, skipIfFailed: false });
+          let runRes = await runAndSubmit(tabId, { autoSubmit: false, autoNext: false, skipIfFailed: false });
 
           // Step 6: Self-Correction (Retry once if failed to achieve maximum score)
           if (!runRes.passed && runRes.output) {
@@ -113,7 +114,7 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
               code = await generateSolution(problem, lang, msg.payload.modelName, runRes.output);
               await fillEditor(tabId, code, msg.payload);
               await new Promise(r => setTimeout(r, 600));
-              runRes = await runAndSubmit(tabId, { autoNext: false, skipIfFailed: false });
+              runRes = await runAndSubmit(tabId, { autoSubmit: false, autoNext: false, skipIfFailed: false });
             } catch (e) {
               console.warn('Self-correction failed:', e);
             }
@@ -187,7 +188,7 @@ async function findSkillRackTabId() {
   return activeTabId || null;
 }
 
-// --- CAPTCHA SOLVER ---
+// --- CAPTCHA SOLVER & TRANSITION ---
 async function solveAdditionCaptcha(tabId) {
   try {
     const results = await chrome.scripting.executeScript({
@@ -199,45 +200,44 @@ async function solveAdditionCaptcha(tabId) {
     const info = results.find(r => r?.result?.found)?.result;
     if (!info) return { solved: false };
 
-    // Solved via direct text math evaluation (e.g. 31+6= -> 37)
+    // Solved via direct DOM text evaluation (e.g. 31+6= -> 37)
     if (info.solvedText) {
-      // Grace pause for SkillRack to transition to code editor
-      await new Promise(r => setTimeout(r, 1800));
+      await waitForProblemToMount(tabId);
       return { solved: true, sum: info.sum, expr: info.expr };
     }
 
-    // Solved via VLM image reading if captcha is an image
-    if (info.imageDataUrl) {
-      const { groqKey } = await chrome.storage.local.get('groqKey');
-      if (groqKey) {
-        const sumVal = await solveCaptchaWithGroq(groqKey.trim(), info.imageDataUrl);
-        if (sumVal !== null) {
-          await chrome.scripting.executeScript({
-            target: { tabId, allFrames: true },
-            func: (val) => {
-              const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])')];
-              const cap = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]') || inputs[0];
-              if (cap) {
-                cap.focus();
-                cap.value = val;
-                cap.dispatchEvent(new Event('input', { bubbles: true }));
-                cap.dispatchEvent(new Event('change', { bubbles: true }));
+    // Solved via VLM image reading if captcha is an image/canvas
+    if (info.isImage) {
+      let dataUrl = info.imageDataUrl;
+      if (!dataUrl && info.imageSrc) {
+        dataUrl = await fetchImageAsDataUrl(info.imageSrc);
+      }
 
-                const btn = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')]
-                  .find(b => /(proceed to solve|proceed|solve the program|verify|submit|ok)/i.test(b.textContent || b.value || ''));
-                if (btn) (btn.closest('button, a, input') || btn).click();
-              }
-            },
-            args: [sumVal],
-            world: 'MAIN'
-          });
-          await new Promise(r => setTimeout(r, 1800));
-          return { solved: true, sum: sumVal };
-        }
+      if (!dataUrl) {
+        console.warn('Could not extract image data URL for captcha.');
+        return { solved: false };
+      }
+
+      const { groqKey } = await chrome.storage.local.get('groqKey');
+      if (!groqKey) {
+        throw new Error('Groq API Key is required to solve the addition verification image. Add it in ⚙ Settings.');
+      }
+
+      const sumVal = await solveCaptchaWithGroq(groqKey.trim(), dataUrl);
+      if (sumVal !== null && !isNaN(sumVal)) {
+        await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: submitCaptchaAnswer,
+          args: [sumVal],
+          world: 'MAIN'
+        });
+
+        await waitForProblemToMount(tabId);
+        return { solved: true, sum: sumVal };
       }
     }
   } catch (e) {
-    console.warn('Captcha solve error:', e);
+    console.warn('solveAdditionCaptcha error:', e);
   }
   return { solved: false };
 }
@@ -246,32 +246,15 @@ function checkAndSolveMathCaptcha() {
   const allClickables = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a, div[role="button"]')];
   
   // 1. Detect "Proceed to Solve the Program" button
-  const proceedBtn = allClickables.find(b => {
+  const proceedBtn = document.getElementById('proceedbtn') || allClickables.find(b => {
     const t = (b.textContent || b.value || '').trim().toLowerCase();
     return t.includes('proceed to solve') || t.includes('solve the program') || t.includes('proceed');
   });
 
-  // 2. Scan for addition sum pattern like "31+6=" or "31 + 6 = ?" or "31+6"
-  const scanSources = [document.body.innerText, ...[...document.querySelectorAll('pre, code, div, span, p')].map(e => e.innerText)];
-  let mathMatch = null;
-
-  for (const text of scanSources) {
-    if (!text) continue;
-    // Matches "31+6=" or "31 + 6 =" or "31+6"
-    const m = text.match(/(\d{1,4})\s*[\+\x2B]\s*(\d{1,4})\s*=?/);
-    if (m) {
-      const a = parseInt(m[1], 10);
-      const b = parseInt(m[2], 10);
-      if (a < 10000 && b < 10000) {
-        mathMatch = m;
-        break;
-      }
-    }
-  }
-
-  // 3. Find answer input box
+  // 2. Find answer input box (#capval or near proceedBtn)
   const inputs = [...document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])')];
-  let targetInput = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]');
+  let targetInput = document.getElementById('capval') ||
+    document.querySelector('input[name*="cap" i], input[id*="cap" i]');
 
   if (!targetInput && proceedBtn) {
     const btnTop = proceedBtn.getBoundingClientRect().top;
@@ -283,78 +266,222 @@ function checkAndSolveMathCaptcha() {
     targetInput = inputs[0];
   }
 
-  // 4. Solve and auto-fill if addition sum found
-  if (targetInput && mathMatch) {
-    const num1 = parseInt(mathMatch[1], 10);
-    const num2 = parseInt(mathMatch[2], 10);
-    const sum = num1 + num2;
-
-    targetInput.focus();
-    targetInput.value = sum;
-    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
-    targetInput.dispatchEvent(new Event('change', { bubbles: true }));
-    targetInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', keyCode: 13 }));
-
-    if (proceedBtn) {
-      setTimeout(() => {
-        (proceedBtn.closest('button, a, input') || proceedBtn).click();
-      }, 150);
-    } else {
-      const fallbackBtn = allClickables.find(b => /(submit|proceed|verify|continue|ok|enter)/i.test(b.textContent || b.value || ''));
-      if (fallbackBtn) {
-        setTimeout(() => {
-          (fallbackBtn.closest('button, a, input') || fallbackBtn).click();
-        }, 150);
-      }
-    }
-
-    return { found: true, solvedText: true, sum, expr: `${num1}+${num2}=${sum}` };
+  if (!proceedBtn && !targetInput) {
+    return { found: false };
   }
 
-  // 5. Image captcha fallback
-  const capImg = document.querySelector('img#capimg, img[src*="cap" i], img[id*="cap" i], img[src*="captcha" i]');
-  if (capImg && targetInput) {
+  // 3. Fast check: If math text exists directly in DOM (e.g. "31+6=" or "31 + 6 =")
+  const scanSources = [document.body.innerText, ...[...document.querySelectorAll('pre, code, div, span, p')].map(e => e.innerText)];
+  for (const text of scanSources) {
+    if (!text) continue;
+    const m = text.match(/(\d{1,4})\s*[\+\x2B]\s*(\d{1,4})\s*=?/);
+    if (m) {
+      const a = parseInt(m[1], 10);
+      const b = parseInt(m[2], 10);
+      if (a < 10000 && b < 10000 && targetInput) {
+        const sum = a + b;
+        targetInput.focus();
+        targetInput.value = sum;
+        targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+        targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+        targetInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', keyCode: 13 }));
+
+        if (proceedBtn) {
+          setTimeout(() => {
+            (proceedBtn.closest('button, a, input') || proceedBtn).click();
+          }, 150);
+        }
+        return { found: true, solvedText: true, sum, expr: `${a}+${b}=${sum}` };
+      }
+    }
+  }
+
+  // 4. Image/Canvas Captcha Search
+  const candidateElements = [...document.querySelectorAll('img, canvas')];
+  let capEl = null;
+
+  // Primary: Known PrimeFaces / SkillRack IDs or attributes
+  capEl = document.querySelector('#j_id_76, #j_id_5s, #capimg, img[id*="cap" i], img[src*="cap" i], img[id*="j_id" i], img[src*="dynamiccontent" i]');
+
+  // Secondary: Element positioned directly above targetInput (within 350px vertically)
+  if (!capEl && targetInput) {
+    const inputRect = targetInput.getBoundingClientRect();
+    const above = candidateElements.filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.bottom <= (inputRect.top + 30) && r.top >= (inputRect.top - 350) && r.width >= 50 && r.height >= 20;
+    });
+    above.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
+    if (above.length > 0) capEl = above[0];
+  }
+
+  // Tertiary: Any image or canvas inside the same container / panel
+  if (!capEl && (targetInput || proceedBtn)) {
+    const container = (targetInput || proceedBtn).closest('.ui-panel, form, table, div');
+    if (container) {
+      const inside = [...container.querySelectorAll('img, canvas')].filter(el => {
+        const r = el.getBoundingClientRect();
+        return r.width >= 50 && r.height >= 20;
+      });
+      if (inside.length > 0) capEl = inside[0];
+    }
+  }
+
+  if (capEl) {
     try {
+      const w = capEl.naturalWidth || capEl.width || 438;
+      const h = capEl.naturalHeight || capEl.height || 62;
       const canvas = document.createElement('canvas');
-      canvas.width = capImg.naturalWidth || capImg.width || 140;
-      canvas.height = capImg.naturalHeight || capImg.height || 45;
+      canvas.width = w;
+      canvas.height = h;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(capImg, 0, 0);
-      return { found: true, imageDataUrl: canvas.toDataURL('image/png') };
-    } catch (e) {}
+      ctx.drawImage(capEl, 0, 0, w, h);
+
+      // Invert colors (terminal dark bg -> pure white paper bg, monospace white text -> dark text)
+      ctx.globalCompositeOperation = 'difference';
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, w, h);
+
+      const invertedDataUrl = canvas.toDataURL('image/png');
+      return { found: true, isImage: true, imageDataUrl: invertedDataUrl, imageSrc: capEl.src || null };
+    } catch (e) {
+      return { found: true, isImage: true, imageDataUrl: null, imageSrc: capEl.src || null };
+    }
   }
 
   return { found: false };
 }
 
-async function solveCaptchaWithGroq(apiKey, dataUrl) {
+function submitCaptchaAnswer(val) {
+  const cap = document.getElementById('capval') ||
+    document.querySelector('input[name*="cap" i], input[id*="cap" i]') ||
+    document.querySelector('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
+
+  if (cap) {
+    cap.focus();
+    cap.value = '';
+    try { document.execCommand('insertText', false, String(val)); } catch (e) {}
+    if (cap.value !== String(val)) {
+      cap.value = String(val);
+    }
+    cap.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    cap.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    cap.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
+    cap.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', keyCode: 13, which: 13 }));
+  }
+
+  setTimeout(() => {
+    const btn = document.getElementById('proceedbtn') ||
+      [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')]
+        .find(b => /(proceed to solve|solve the program|proceed)/i.test((b.textContent || b.value || '').trim()));
+    if (btn) {
+      (btn.closest('button, a, input') || btn).click();
+    }
+  }, 120);
+}
+
+async function fetchImageAsDataUrl(url) {
   try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'qwen/qwen3.8-27b',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Solve the addition sum in this image (e.g. A + B). Output ONLY the integer sum number. No words, no punctuation.' },
-              { type: 'image_url', image_url: { url: dataUrl } }
-            ]
-          }
-        ],
-        temperature: 0.1,
-        max_tokens: 15
-      })
-    });
+    const res = await fetch(url);
     if (!res.ok) return null;
-    const data = await res.json();
-    const txt = data.choices?.[0]?.message?.content?.trim() || '';
-    const num = parseInt(txt.replace(/[^\d]/g, ''), 10);
-    return isNaN(num) ? null : num;
+    const blob = await res.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
   } catch (e) {
+    console.warn('fetchImageAsDataUrl failed:', e);
     return null;
   }
+}
+
+async function waitForProblemToMount(tabId, maxWaitMs = 6000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise(r => setTimeout(r, 350));
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const hasEditor = !!document.querySelector('.ace_editor, .CodeMirror, #editor, textarea.ace_text-input');
+          const hasQuestion = !!document.querySelector('#quesTitle, .ques-title, .question-title, #quesView, #problemDesc, .problem-statement');
+          const gateGone = !document.getElementById('proceedbtn') &&
+            ![...document.querySelectorAll('button, a, input[type="button"]')].some(b => /proceed to solve/i.test(b.textContent || b.value || ''));
+          return (hasEditor || hasQuestion) && gateGone;
+        }
+      });
+      if (res?.result) return true;
+    } catch (e) {}
+  }
+  return true;
+}
+
+async function solveCaptchaWithGroq(apiKey, dataUrl) {
+  const visionCandidates = [
+    'qwen/qwen3.8-27b',
+    'meta-models/muse-spark-open',
+    'llama-3.2-11b-vision-preview',
+    'llama-3.2-90b-vision-preview'
+  ];
+
+  for (const model of visionCandidates) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: 'This image contains a student ID and a math addition equation (e.g. 31+6=). Calculate the sum of the addition. Output ONLY the resulting integer sum as digits, nothing else. No words, no equals sign, no explanations.'
+                },
+                {
+                  type: 'image_url',
+                  image_url: { url: dataUrl }
+                }
+              ]
+            }
+          ],
+          temperature: 0.0,
+          max_tokens: 25
+        })
+      });
+
+      if (!res.ok) {
+        console.warn(`Groq VLM model ${model} HTTP status: ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json();
+      const txt = data.choices?.[0]?.message?.content?.trim() || '';
+      console.log(`Groq VLM (${model}) output:`, txt);
+
+      const eqMatch = txt.match(/=\s*(\d{1,6})/);
+      if (eqMatch) return parseInt(eqMatch[1], 10);
+
+      const pureNumMatch = txt.match(/^\s*(\d{1,6})\s*$/);
+      if (pureNumMatch) return parseInt(pureNumMatch[1], 10);
+
+      const wordMatch = txt.match(/(?:sum|answer|result|is)\s*:?\s*(\d{1,6})/i);
+      if (wordMatch) return parseInt(wordMatch[1], 10);
+
+      const allNums = txt.match(/\b\d{1,6}\b/g);
+      if (allNums && allNums.length > 0) {
+        return parseInt(allNums[allNums.length - 1], 10);
+      }
+    } catch (e) {
+      console.warn(`Groq VLM attempt failed for ${model}:`, e);
+    }
+  }
+  return null;
 }
 
 // --- CORE ASYNC OPS ---
@@ -362,9 +489,12 @@ async function scrapeTab(tabId) {
   let results = await chrome.scripting.executeScript({ target: { tabId }, files: ['content/scraper.js'] });
   let p = results[0]?.result;
 
-  // If addition screen was just bypassed, wait for the actual problem page to finish loading
-  if (p?.isAdditionBypassed) {
-    await new Promise(r => setTimeout(r, 1800));
+  // If addition gate was detected or just bypassed, solve it and wait for editor
+  if (p?.isAdditionGate || p?.isAdditionBypassed) {
+    if (!p.isAdditionBypassed) {
+      await solveAdditionCaptcha(tabId);
+    }
+    await waitForProblemToMount(tabId);
     results = await chrome.scripting.executeScript({ target: { tabId }, files: ['content/scraper.js'] });
     p = results[0]?.result;
   }
@@ -704,6 +834,7 @@ function initEditorFiller(code, opt) {
 function clickRunSubmit(options) {
   return new Promise((resolve) => {
     const autoNext = typeof options === 'boolean' ? options : !!options?.autoNext;
+    const autoSubmit = typeof options === 'object' ? (options?.autoSubmit ?? autoNext) : autoNext;
     const skipIfFailed = typeof options === 'object' ? !!options?.skipIfFailed : false;
 
     const findBtn = (keys) => {
@@ -727,27 +858,31 @@ function clickRunSubmit(options) {
         const isPass = /(passed|100%|all test cases|success|correct)/i.test(out) && !/(compilation error|wrong answer|runtime error|syntaxerror|fail)/i.test(out);
 
         if (isPass) {
-          setTimeout(() => {
-            // First submit click
-            const sub = findBtn(['submit', 'process', 'evaluate', 'mark as solved']);
-            if (sub) (sub.closest('button, a, input') || sub).click();
-
-            // Second submit click / confirmation
+          if (autoSubmit) {
             setTimeout(() => {
-              const confirmBtn = findBtn(['yes', 'confirm', 'ok', 'submit', 'final submit']);
-              if (confirmBtn) (confirmBtn.closest('button, a, input') || confirmBtn).click();
+              // First submit click
+              const sub = findBtn(['submit', 'process', 'evaluate', 'save & submit', 'mark as solved']);
+              if (sub) (sub.closest('button, a, input') || sub).click();
 
-              if (autoNext) {
-                setTimeout(() => {
-                  const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
-                  if (nxt) (nxt.closest('button, a, input') || nxt).click();
-                  resolve({ ok: true, output: out, passed: true, submitted: true, next: !!nxt });
-                }, 1200);
-              } else {
-                resolve({ ok: true, output: out, passed: true, submitted: true });
-              }
-            }, 800);
-          }, 700);
+              // Second submit click / confirmation
+              setTimeout(() => {
+                const confirmBtn = findBtn(['yes', 'confirm', 'ok', 'submit', 'final submit']);
+                if (confirmBtn) (confirmBtn.closest('button, a, input') || confirmBtn).click();
+
+                if (autoNext) {
+                  setTimeout(() => {
+                    const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
+                    if (nxt) (nxt.closest('button, a, input') || nxt).click();
+                    resolve({ ok: true, output: out, passed: true, submitted: true, next: !!nxt });
+                  }, 1200);
+                } else {
+                  resolve({ ok: true, output: out, passed: true, submitted: true });
+                }
+              }, 800);
+            }, 700);
+          } else {
+            resolve({ ok: true, output: out, passed: true, submitted: false });
+          }
         } else {
           if (skipIfFailed) {
             setTimeout(() => {
