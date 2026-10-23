@@ -12,7 +12,6 @@ const problemTitle   = $('problemTitle');
 const problemMeta    = $('problemMeta');
 const autoSolveBtn   = $('autoSolveBtn');
 const scrapeBtn      = $('scrapeBtn');
-const solveBtn       = $('solveBtn');
 const langSelect     = $('langSelect');
 const fillModeSelect = $('fillModeSelect');
 const speedField     = $('speedField');
@@ -142,7 +141,6 @@ async function runAutoSolve() {
 }
 
 autoSolveBtn.addEventListener('click', runAutoSolve);
-solveBtn.addEventListener('click', runAutoSolve);
 
 // Manual Scan
 scrapeBtn.addEventListener('click', async () => {
@@ -165,8 +163,7 @@ scrapeBtn.addEventListener('click', async () => {
     const opt = [...langSelect.options].find(o => o.value.toLowerCase().includes(currentProblem.detectedLanguage.toLowerCase()));
     if (opt) langSelect.value = opt.value;
   }
-  solveBtn.disabled = false;
-  setStatus('done', 'Problem detected — ready to solve ✓');
+  setStatus('done', 'Problem detected — click 1-Click Auto Solve ✓');
 });
 
 // UI helpers
@@ -186,7 +183,6 @@ function displayCode(c) {
 function setBusy(b) {
   autoSolveBtn.disabled = b;
   scrapeBtn.disabled = b;
-  solveBtn.disabled = b || !currentProblem;
 }
 
 function setStatus(dot, txt) {
