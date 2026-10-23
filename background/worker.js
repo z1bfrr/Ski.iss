@@ -59,10 +59,14 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
           const problem = await scrapeTab(tabId);
           const lang = msg.payload.language || problem.detectedLanguage || 'Python 3';
           const code = await generateSolution(problem, lang, msg.payload.modelName);
+
+          // Type code directly into the SkillRack Ace editor
           await fillEditor(tabId, code, msg.payload);
 
           let runOutput = null;
           if (msg.payload.autoRun) {
+            // Short grace pause so Ace finishes rendering internal model before running
+            await new Promise(r => setTimeout(r, 600));
             const runRes = await runAndSubmit(tabId, msg.payload.autoNext);
             runOutput = runRes?.output;
           }
@@ -139,7 +143,6 @@ async function generateSolution(problem, language, userModel) {
 
   const apiKey = groqKey.trim().replace(/^["']|["']$/g, '');
 
-  // 1. Query available models dynamically so we never 404 on deprecated models
   let modelCandidates = [];
   try {
     const mRes = await fetch('https://api.groq.com/openai/v1/models', {
@@ -159,7 +162,6 @@ async function generateSolution(problem, language, userModel) {
         modelCandidates.push(requested);
       }
 
-      // Priority list of proven CP models
       const priority = [
         'llama-3.3-70b-versatile',
         'openai/gpt-oss-120b',
@@ -192,7 +194,6 @@ async function generateSolution(problem, language, userModel) {
     ];
   }
 
-  // Compact prompt to minimize token burn
   const system = `Competitive programmer. Return ONLY raw compilable ${language} code solving the task.
 No markdown fences, no comments, no explanation. Stdin->Stdout.
 Java: class Hello. C/C++: standard headers, long long for >10^9. Python: sys.stdin.read().split().`;
@@ -202,7 +203,6 @@ Java: class Hello. C/C++: standard headers, long long for >10^9. Python: sys.std
   if (problem.inputFormat) prompt += `InFormat: ${problem.inputFormat}\n`;
   if (problem.outputFormat) prompt += `OutFormat: ${problem.outputFormat}\n`;
 
-  // Include at most 2 sample cases to conserve token budget
   if (problem.examples?.length) {
     problem.examples.slice(0, 2).forEach((e, i) => {
       prompt += `Ex${i + 1}:\nIn:${e.input}\nOut:${e.output}\n`;
@@ -235,14 +235,12 @@ Java: class Hello. C/C++: standard headers, long long for >10^9. Python: sys.std
       const code = data.choices?.[0]?.message?.content?.trim();
       if (!code) throw new Error('Empty response');
 
-      // Auto-save the working model
       await chrome.storage.local.set({ modelName: m });
-
       return code.replace(/^```[a-zA-Z0-9_+\-]*\n?/, '').replace(/```\s*$/, '').trim();
     } catch (e) {
       lastError = e;
       if (e.message.includes('does not exist') || e.message.includes('access') || e.message.includes('404')) {
-        continue; // Try next model candidate
+        continue;
       }
       if (e.message.includes('Invalid') || e.message.includes('quota') || e.message.includes('rate_limit')) {
         throw e;
@@ -257,13 +255,13 @@ async function fillEditor(tabId, code, options) {
   const results = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: initEditorFiller,
-    args: [code, { mode: options?.fillMode || 'instant', delayMs: options?.typingSpeed || 12 }],
+    args: [code, { mode: options?.fillMode || 'typing', delayMs: options?.typingSpeed || 6 }],
     world: 'MAIN'
   });
-  const ok = results.some(r => r?.result?.ok);
-  if (!ok) {
-    const err = results.find(r => r?.result?.error)?.result?.error;
-    throw new Error(err || 'No compatible code editor found.');
+
+  const filled = results.find(r => r?.result?.ok && !r?.result?.skipped);
+  if (!filled) {
+    throw new Error('Could not find the SkillRack Ace editor on the page or in iframes.');
   }
 }
 
@@ -279,15 +277,16 @@ async function runAndSubmit(tabId, autoNext) {
   return r;
 }
 
-// ── Injected in target page (MAIN world) ──
+// ── Injected in target page across all frames (MAIN world) ──
 function initEditorFiller(code, opt) {
   return new Promise((resolve) => {
-    const mode = opt?.mode || 'instant';
-    const delay = opt?.delayMs || 12;
+    const mode = opt?.mode || 'typing';
+    const delay = opt?.delayMs || 6;
 
+    // Helper: sync form textareas so backend submission receives new code
     const syncInputs = () => {
       document.querySelectorAll('textarea, input[type="hidden"], input[type="text"]').forEach(el => {
-        const n = `${el.id} ${el.name}`.toLowerCase();
+        const n = `${el.id} ${el.name} ${el.className}`.toLowerCase();
         if (n.includes('code') || n.includes('source') || n.includes('program') || n.includes('editor')) {
           el.value = code;
           el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -296,62 +295,130 @@ function initEditorFiller(code, opt) {
       });
     };
 
-    // 1. Ace Editor
-    const aceEl = document.querySelector('.ace_editor');
+    // 1. Locate Ace Editor in current frame
+    let aceEl = document.querySelector('.ace_editor.ace_dark, .ace_editor, div[class*="ace_editor"]');
+
+    // Also check if Ace is inside an iframe in current frame
+    if (!aceEl) {
+      for (const iframe of document.querySelectorAll('iframe')) {
+        try {
+          const iDoc = iframe.contentDocument || iframe.contentWindow?.document;
+          if (iDoc) {
+            const found = iDoc.querySelector('.ace_editor.ace_dark, .ace_editor');
+            if (found) { aceEl = found; break; }
+          }
+        } catch(e) {}
+      }
+    }
+
     if (aceEl) {
-      let ed = aceEl.env?.editor || (window.ace && (window.ace.edit(aceEl.id || aceEl))) || window.editor;
-      if (ed?.setValue) {
-        if (mode === 'instant' || delay <= 1) {
-          ed.setValue(code, -1);
-          ed.clearSelection();
+      let ed = null;
+
+      // Method A: aceEl.env.editor
+      if (aceEl.env && aceEl.env.editor) ed = aceEl.env.editor;
+
+      // Method B: window.ace.edit(aceEl.id) or window.ace.edit(aceEl)
+      if (!ed && window.ace && typeof window.ace.edit === 'function') {
+        try { ed = window.ace.edit(aceEl.id || aceEl); } catch(e) {}
+      }
+
+      // Method C: parent / top window ace
+      if (!ed && window.parent?.ace && typeof window.parent.ace.edit === 'function') {
+        try { ed = window.parent.ace.edit(aceEl.id || aceEl); } catch(e) {}
+      }
+
+      // Method D: window.editor
+      if (!ed && window.editor && typeof window.editor.setValue === 'function') {
+        ed = window.editor;
+      }
+
+      if (ed) {
+        try { ed.$blockScrolling = Infinity; } catch(e) {}
+        try { ed.focus(); } catch(e) {}
+
+        if (mode === 'typing' && delay > 0) {
+          // Clear editor first
+          try { ed.setValue('', -1); } catch(e) {}
+
+          // Disable auto-close brackets so Ace doesn't insert extra }} or quotes
+          const prevB = ed.getBehavioursEnabled ? ed.getBehavioursEnabled() : true;
+          if (ed.setBehavioursEnabled) ed.setBehavioursEnabled(false);
+
+          const chars = [...code];
+          let i = 0;
+
+          function typeNext() {
+            if (i >= chars.length) {
+              if (ed.setBehavioursEnabled) ed.setBehavioursEnabled(prevB);
+              try { ed.clearSelection(); } catch(e) {}
+              syncInputs();
+              resolve({ ok: true, method: 'ace-typed' });
+              return;
+            }
+            try { ed.insert(chars[i++]); } catch(e) {}
+            setTimeout(typeNext, delay);
+          }
+          typeNext();
+          return;
+        } else {
+          // Instant Insert
+          try {
+            ed.setValue('');
+            ed.insert(code);
+            ed.clearSelection();
+          } catch(e) {
+            ed.setValue(code, -1);
+          }
           syncInputs();
           resolve({ ok: true, method: 'ace-instant' });
           return;
         }
-        // Typing mode: temporarily disable auto-brackets so Ace won't inject duplicate quotes/braces
-        const prevB = ed.getBehavioursEnabled ? ed.getBehavioursEnabled() : true;
-        if (ed.setBehavioursEnabled) ed.setBehavioursEnabled(false);
-        ed.setValue('', -1);
+      }
 
-        const chars = [...code];
-        let i = 0;
-        const typeChar = () => {
-          if (i >= chars.length) {
-            if (ed.setBehavioursEnabled) ed.setBehavioursEnabled(prevB);
-            ed.clearSelection();
-            syncInputs();
-            resolve({ ok: true, method: 'ace-type' });
-            return;
-          }
-          try { ed.insert(chars[i++]); } catch {}
-          setTimeout(typeChar, Math.max(3, delay + Math.floor(Math.random() * 6 - 3)));
-        };
-        typeChar();
+      // Method E: Direct typing into Ace's text input element
+      const aceInput = aceEl.querySelector('textarea.ace_text-input') || aceEl.querySelector('textarea');
+      if (aceInput) {
+        aceEl.click();
+        aceInput.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, code);
+
+        const dt = new DataTransfer();
+        dt.setData('text/plain', code);
+        aceInput.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+
+        syncInputs();
+        resolve({ ok: true, method: 'ace-input-fallback' });
         return;
       }
     }
 
-    // 2. CodeMirror
-    const cm = document.querySelector('.CodeMirror')?.CodeMirror;
-    if (cm?.setValue) {
-      cm.setValue(code);
+    // 2. CodeMirror support
+    const cmEl = document.querySelector('.CodeMirror');
+    if (cmEl && cmEl.CodeMirror) {
+      cmEl.CodeMirror.setValue(code);
       syncInputs();
       resolve({ ok: true, method: 'codemirror' });
       return;
     }
 
-    // 3. Fallback textarea
-    const ta = document.querySelector('textarea:not(.ace_text-input)');
-    if (ta) {
-      ta.value = code;
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-      ta.dispatchEvent(new Event('change', { bubbles: true }));
-      syncInputs();
-      resolve({ ok: true, method: 'textarea' });
+    // 3. Fallback ONLY if element is an explicit code textarea
+    const codeTa = [...document.querySelectorAll('textarea')].find(t => {
+      if (t.classList.contains('ace_text-input')) return false;
+      const k = `${t.id} ${t.name} ${t.className}`.toLowerCase();
+      return k.includes('code') || k.includes('source') || k.includes('program') || k.includes('editor');
+    });
+
+    if (codeTa) {
+      codeTa.value = code;
+      codeTa.dispatchEvent(new Event('input', { bubbles: true }));
+      codeTa.dispatchEvent(new Event('change', { bubbles: true }));
+      resolve({ ok: true, method: 'code-textarea' });
       return;
     }
 
-    resolve({ ok: false });
+    // Skip frames that don't have a code editor
+    resolve({ ok: false, skipped: true });
   });
 }
 

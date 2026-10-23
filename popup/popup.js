@@ -38,9 +38,9 @@ const autoNextCheck  = $('autoNextCheck');
 document.addEventListener('DOMContentLoaded', async () => {
   const s = await msg({ type: 'GET_SETTINGS' });
   if (s.groqKey)     apiKeyInput.value    = s.groqKey;
-  if (s.typingSpeed) speedSlider.value    = s.typingSpeed;
+  speedSlider.value    = s.typingSpeed || 6;
   if (s.language)    langSelect.value     = s.language;
-  if (s.fillMode)    fillModeSelect.value = s.fillMode;
+  fillModeSelect.value = s.fillMode || 'typing';
   if (s.modelName)   modelSelect.value    = s.modelName;
   updateModeView();
 });

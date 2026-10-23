@@ -52,21 +52,21 @@
       <div class="field">
         <label class="field-label" for="fillModeSelect">Code Injection Mode</label>
         <select class="select" id="fillModeSelect">
-          <option value="instant" selected>⚡ Instant Fill (Fast &amp; Accurate)</option>
-          <option value="typing">⌨ Typing Simulation (Human-like)</option>
+          <option value="typing" selected>⌨ Auto Type into Code Box</option>
+          <option value="instant">⚡ Instant Fill</option>
         </select>
       </div>
 
       <!-- Typing speed (conditional) -->
-      <div class="field" id="speedField" style="display:none">
+      <div class="field" id="speedField">
         <label class="field-label">
           Typing speed
-          <span class="speed-label" id="speedLabel">12ms / char</span>
+          <span class="speed-label" id="speedLabel">6ms / char</span>
         </label>
         <input type="range" class="slider" id="speedSlider"
-               min="2" max="50" value="12" step="1">
+               min="1" max="40" value="6" step="1">
         <div class="slider-hints">
-          <span>Fast (2ms)</span><span>Natural (12ms)</span><span>Slow (50ms)</span>
+          <span>Fast (1ms)</span><span>Smooth (6ms)</span><span>Slow (40ms)</span>
         </div>
       </div>
 
