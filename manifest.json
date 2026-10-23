@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Skill Issue",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Auto-reads SkillRack problems and types solutions using AI",
   "permissions": [
     "activeTab",
@@ -13,6 +13,7 @@
   "host_permissions": [
     "https://www.skillrack.com/*",
     "https://skillrack.com/*",
+    "https://api.groq.com/*",
     "http://localhost/*"
   ],
   "background": {

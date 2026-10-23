@@ -43,35 +43,49 @@
         <select class="select" id="langSelect">
           <option value="C">C</option>
           <option value="C++">C++</option>
-          <option value="Java">Java</option>
+          <option value="Java">Java (class Hello)</option>
           <option value="Python 3" selected>Python 3</option>
         </select>
       </div>
 
-      <!-- Typing speed -->
+      <!-- Fill Mode -->
       <div class="field">
+        <label class="field-label" for="fillModeSelect">Code Injection Mode</label>
+        <select class="select" id="fillModeSelect">
+          <option value="instant" selected>⚡ Instant Fill (Fast &amp; Accurate)</option>
+          <option value="typing">⌨ Typing Simulation (Human-like)</option>
+        </select>
+      </div>
+
+      <!-- Typing speed (conditional) -->
+      <div class="field" id="speedField" style="display:none">
         <label class="field-label">
           Typing speed
           <span class="speed-label" id="speedLabel">12ms / char</span>
         </label>
         <input type="range" class="slider" id="speedSlider"
-               min="2" max="60" value="12" step="1">
+               min="2" max="50" value="12" step="1">
         <div class="slider-hints">
-          <span>Fast</span><span>Slow</span>
+          <span>Fast (2ms)</span><span>Natural (12ms)</span><span>Slow (50ms)</span>
         </div>
       </div>
 
-      <!-- Action buttons -->
+      <!-- Main Action: 1-Click Auto Solve & Fill -->
+      <button class="btn primary full-glow" id="autoSolveBtn">
+        ⚡ 1-Click Auto Solve &amp; Fill
+      </button>
+
+      <!-- Sub Actions -->
       <div class="actions">
-        <button class="btn secondary" id="scrapeBtn">🔍 Read Problem</button>
-        <button class="btn primary" id="solveBtn" disabled>⚡ Solve & Type</button>
+        <button class="btn secondary" id="scrapeBtn">🔍 Scan Page</button>
+        <button class="btn secondary" id="solveBtn" disabled>✏ Solve &amp; Fill</button>
       </div>
 
       <!-- Auto options -->
       <div class="auto-options">
         <label class="toggle-row">
           <input type="checkbox" id="autoRunCheck" checked>
-          <span class="toggle-label">Auto Run after typing</span>
+          <span class="toggle-label">Auto Run after code filled</span>
         </label>
         <label class="toggle-row">
           <input type="checkbox" id="autoNextCheck">
@@ -82,7 +96,7 @@
       <!-- Generated code preview -->
       <div class="code-block" id="codeBlock" style="display:none">
         <div class="code-header">
-          <span>Generated code</span>
+          <span>Generated solution</span>
           <button class="copy-btn" id="copyBtn">Copy</button>
         </div>
         <pre class="code-pre" id="codeContent"></pre>
@@ -110,6 +124,15 @@
         </div>
       </div>
 
+      <div class="field">
+        <label class="field-label" for="modelSelect">AI Model</label>
+        <select class="select" id="modelSelect">
+          <option value="llama-3.3-70b-versatile" selected>Llama 3.3 70B (Recommended)</option>
+          <option value="llama-3.1-8b-instant">Llama 3.1 8B (Ultra Fast)</option>
+          <option value="qwen-2.5-coder-32b">Qwen 2.5 Coder 32B</option>
+        </select>
+      </div>
+
       <button class="btn primary full" id="saveSettingsBtn">Save Settings</button>
 
       <a class="get-key-link" href="https://console.groq.com/keys" target="_blank">
@@ -121,15 +144,15 @@
       <div class="settings-info">
         <div class="info-row">
           <span class="info-icon">🔒</span>
-          <span>Key stored locally in Chrome only — never shared.</span>
-        </div>
-        <div class="info-row">
-          <span class="info-icon">🆓</span>
-          <span>Groq is <strong style="color:var(--accent)">100% FREE</strong> — just email signup, no credit card ever.</span>
+          <span>Key stored locally in your browser storage only.</span>
         </div>
         <div class="info-row">
           <span class="info-icon">⚡</span>
-          <span>Uses Llama 3.3 70B — faster &amp; smarter than GPT-3.5 for coding.</span>
+          <span><strong>Instant Fill</strong> injects optimal code directly into Ace/CodeMirror in &lt;100ms.</span>
+        </div>
+        <div class="info-row">
+          <span class="info-icon">☕</span>
+          <span>Java solutions automatically format with <code>public class Hello</code> for SkillRack compatibility.</span>
         </div>
       </div>
     </div>

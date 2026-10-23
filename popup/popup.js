@@ -5,68 +5,96 @@ const $ = (id) => document.getElementById(id);
 let currentProblem = null;
 let generatedCode  = null;
 
-// --- DOM refs ---
-const statusDot      = $('statusDot');
-const statusText     = $('statusText');
-const problemCard    = $('problemCard');
-const problemTitle   = $('problemTitle');
-const problemMeta    = $('problemMeta');
-const scrapeBtn      = $('scrapeBtn');
-const solveBtn       = $('solveBtn');
-const langSelect     = $('langSelect');
-const speedSlider    = $('speedSlider');
-const speedLabel     = $('speedLabel');
-const codeBlock      = $('codeBlock');
-const codeContent    = $('codeContent');
-const copyBtn        = $('copyBtn');
-const errorBox       = $('errorBox');
-const errorText      = $('errorText');
-const mainPanel      = $('mainPanel');
-const settingsPanel  = $('settingsPanel');
-const settingsToggle = $('settingsToggle');
-const apiKeyInput    = $('apiKeyInput');
-const toggleApiKey   = $('toggleApiKey');
-const saveSettingsBtn= $('saveSettingsBtn');
-const autoRunCheck   = $('autoRunCheck');
-const autoNextCheck  = $('autoNextCheck');
+// --- DOM elements ---
+const statusDot        = $('statusDot');
+const statusText       = $('statusText');
+const problemCard      = $('problemCard');
+const problemTitle     = $('problemTitle');
+const problemMeta      = $('problemMeta');
+const autoSolveBtn     = $('autoSolveBtn');
+const scrapeBtn        = $('scrapeBtn');
+const solveBtn         = $('solveBtn');
+const langSelect       = $('langSelect');
+const fillModeSelect   = $('fillModeSelect');
+const speedField       = $('speedField');
+const speedSlider      = $('speedSlider');
+const speedLabel       = $('speedLabel');
+const codeBlock        = $('codeBlock');
+const codeContent      = $('codeContent');
+const copyBtn          = $('copyBtn');
+const errorBox         = $('errorBox');
+const errorText        = $('errorText');
+const mainPanel        = $('mainPanel');
+const settingsPanel    = $('settingsPanel');
+const settingsToggle   = $('settingsToggle');
+const apiKeyInput      = $('apiKeyInput');
+const toggleApiKey     = $('toggleApiKey');
+const modelSelect      = $('modelSelect');
+const saveSettingsBtn  = $('saveSettingsBtn');
+const autoRunCheck     = $('autoRunCheck');
+const autoNextCheck    = $('autoNextCheck');
 
-// --- Init ---
+// --- Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
   const settings = await msg({ type: 'GET_SETTINGS' });
-  if (settings.groqKey)     apiKeyInput.value  = settings.groqKey;
-  if (settings.typingSpeed) speedSlider.value  = settings.typingSpeed;
-  if (settings.language)    langSelect.value   = settings.language;
+  if (settings.groqKey)     apiKeyInput.value    = settings.groqKey;
+  if (settings.typingSpeed) speedSlider.value    = settings.typingSpeed;
+  if (settings.language)    langSelect.value     = settings.language;
+  if (settings.fillMode)    fillModeSelect.value = settings.fillMode;
+  if (settings.modelName)   modelSelect.value    = settings.modelName;
+
+  updateSpeedVisibility();
   updateSpeedLabel();
 });
 
-// --- Settings toggle ---
-settingsToggle.addEventListener('click', () => {
-  const isSettings = settingsPanel.style.display !== 'none';
-  mainPanel.style.display    = isSettings ? 'flex' : 'none';
-  settingsPanel.style.display= isSettings ? 'none' : 'flex';
-  settingsToggle.textContent = isSettings ? '⚙' : '✕';
+// --- Mode Toggle ---
+fillModeSelect.addEventListener('change', () => {
+  updateSpeedVisibility();
+  msg({ type: 'SAVE_SETTINGS', payload: { fillMode: fillModeSelect.value } });
 });
 
-// --- API key visibility toggle ---
+function updateSpeedVisibility() {
+  speedField.style.display = fillModeSelect.value === 'typing' ? 'flex' : 'none';
+}
+
+// --- Settings Toggle ---
+settingsToggle.addEventListener('click', () => {
+  const isSettings = settingsPanel.style.display !== 'none';
+  mainPanel.style.display     = isSettings ? 'flex' : 'none';
+  settingsPanel.style.display = isSettings ? 'none' : 'flex';
+  settingsToggle.textContent  = isSettings ? '⚙' : '✕';
+});
+
+// --- API Key Visibility Toggle ---
 toggleApiKey.addEventListener('click', () => {
   const isHidden = apiKeyInput.type === 'password';
   apiKeyInput.type = isHidden ? 'text' : 'password';
   toggleApiKey.textContent = isHidden ? '🙈' : '👁';
 });
 
-// --- Save settings ---
+// --- Save Settings ---
 saveSettingsBtn.addEventListener('click', async () => {
-  const groqKey = apiKeyInput.value.trim();
+  const groqKey   = apiKeyInput.value.trim();
+  const modelName = modelSelect.value;
   if (!groqKey) {
     showError('Paste your Groq key (starts with gsk_)');
     return;
   }
+
   saveSettingsBtn.textContent = 'Saving...';
   saveSettingsBtn.disabled = true;
+
   await msg({
     type: 'SAVE_SETTINGS',
-    payload: { groqKey, typingSpeed: +speedSlider.value, language: langSelect.value }
+    payload: {
+      groqKey,
+      modelName,
+      typingSpeed: +speedSlider.value,
+      language: langSelect.value,
+      fillMode: fillModeSelect.value
+    }
   });
+
   saveSettingsBtn.textContent = '✓ Saved!';
   setTimeout(() => {
     saveSettingsBtn.textContent = 'Save Settings';
@@ -75,10 +103,10 @@ saveSettingsBtn.addEventListener('click', async () => {
     settingsPanel.style.display = 'none';
     settingsToggle.textContent = '⚙';
     setStatus('done', 'Settings saved ✓');
-  }, 900);
+  }, 800);
 });
 
-// --- Speed slider ---
+// --- Speed Slider ---
 speedSlider.addEventListener('input', () => {
   updateSpeedLabel();
   msg({ type: 'SAVE_SETTINGS', payload: { typingSpeed: +speedSlider.value } });
@@ -88,31 +116,62 @@ function updateSpeedLabel() {
   speedLabel.textContent = `${speedSlider.value}ms / char`;
 }
 
-// --- Scrape ---
-scrapeBtn.addEventListener('click', async () => {
-  setStatus('running', 'Scanning page for problem...');
+// --- ⚡ 1-Click Auto Solve & Fill ---
+autoSolveBtn.addEventListener('click', async () => {
   hideError();
-  problemCard.style.display = 'none';
-  codeBlock.style.display   = 'none';
-  solveBtn.disabled = true;
-  scrapeBtn.disabled = true;
+  setBusy(true);
+  setStatus('running', '1. Scanning SkillRack problem...');
 
-  const res = await msg({ type: 'SCRAPE_PROBLEM' });
+  const res = await msg({
+    type: 'AUTO_SOLVE_AND_FILL',
+    payload: {
+      language: langSelect.value,
+      fillMode: fillModeSelect.value,
+      typingSpeed: +speedSlider.value,
+      autoRun: autoRunCheck.checked,
+      autoNext: autoNextCheck.checked
+    }
+  });
 
-  scrapeBtn.disabled = false;
+  setBusy(false);
 
   if (res.error) {
-    setStatus('error', 'Failed to read problem');
+    setStatus('error', 'Auto-solve failed');
+    showError(res.error);
+    if (res.problem) displayProblem(res.problem);
+    if (res.code) displayCode(res.code);
+    return;
+  }
+
+  if (res.problem) displayProblem(res.problem);
+  if (res.code) displayCode(res.code);
+
+  if (res.runOutput) {
+    setStatus('done', `✓ Solved, filled & executed! (${res.language})`);
+  } else {
+    setStatus('done', `✓ Solution filled into code box! (${res.language})`);
+  }
+});
+
+// --- Manual Scrape Button ---
+scrapeBtn.addEventListener('click', async () => {
+  hideError();
+  setBusy(true);
+  setStatus('running', 'Scanning page for problem & constraints...');
+
+  const res = await msg({ type: 'SCRAPE_PROBLEM' });
+  setBusy(false);
+
+  if (res.error) {
+    setStatus('error', 'Failed to scan problem');
     showError(res.error);
     return;
   }
 
   currentProblem = res.problem;
-  problemTitle.textContent = currentProblem.title || 'Untitled Problem';
-  problemMeta.textContent  = currentProblem.url;
-  problemCard.style.display = 'block';
+  displayProblem(currentProblem);
 
-  // Auto-set language if detected from the page
+  // Auto-detect language
   if (currentProblem.detectedLanguage) {
     const match = [...langSelect.options].find(o =>
       o.value.toLowerCase().includes(currentProblem.detectedLanguage.toLowerCase()) ||
@@ -122,87 +181,97 @@ scrapeBtn.addEventListener('click', async () => {
   }
 
   solveBtn.disabled = false;
-  setStatus('done', 'Problem found — ready to solve ✓');
+  setStatus('done', 'Problem extracted — click Solve & Fill ✓');
 });
 
-// --- Solve & Type ---
+// --- Manual Solve & Fill Button ---
 solveBtn.addEventListener('click', async () => {
   if (!currentProblem) return;
 
   hideError();
-  codeBlock.style.display = 'none';
-  solveBtn.disabled  = true;
-  scrapeBtn.disabled = true;
+  setBusy(true);
 
-  // Step 1: Generate code via Llama 3.3 (Groq)
-  setStatus('running', 'Generating solution with Llama 3.3...');
+  // Step 1: Generate Code
+  setStatus('running', `Generating optimal ${langSelect.value} solution...`);
   const genRes = await msg({
     type: 'GENERATE_CODE',
-    payload: { problem: currentProblem, language: langSelect.value }
+    payload: { problem: currentProblem, language: langSelect.value, modelName: modelSelect.value }
   });
 
   if (genRes.error) {
+    setBusy(false);
     setStatus('error', 'Generation failed');
     showError(genRes.error);
-    solveBtn.disabled  = false;
-    scrapeBtn.disabled = false;
     return;
   }
 
-  generatedCode  = genRes.code;
-  codeContent.textContent = generatedCode;
-  codeBlock.style.display = 'block';
+  generatedCode = genRes.code;
+  displayCode(generatedCode);
 
-  // Step 2: Type code into editor character by character
-  const charCount = generatedCode.length;
-  const estSecs   = Math.round((charCount * +speedSlider.value) / 1000);
-  setStatus('running', `Typing ${charCount} chars (~${estSecs}s)...`);
+  // Step 2: Inject into Editor
+  const isTyping = fillModeSelect.value === 'typing';
+  setStatus('running', isTyping ? 'Simulating typing into code editor...' : 'Injecting solution into editor...');
 
-  const typeRes = await msg({
+  const fillRes = await msg({
     type: 'TYPE_CODE',
-    payload: { code: generatedCode, typingSpeed: +speedSlider.value }
+    payload: {
+      code: generatedCode,
+      fillMode: fillModeSelect.value,
+      typingSpeed: +speedSlider.value
+    }
   });
 
-  if (typeRes.error) {
-    setStatus('error', 'Typing failed');
-    showError(typeRes.error);
-    solveBtn.disabled  = false;
-    scrapeBtn.disabled = false;
+  if (fillRes.error) {
+    setBusy(false);
+    setStatus('error', 'Failed to inject code');
+    showError(fillRes.error);
     return;
   }
 
-  // Step 3: Auto Run (if enabled)
+  // Step 3: Run if checked
   if (autoRunCheck.checked) {
-    setStatus('running', 'Running code...');
+    setStatus('running', 'Executing & submitting code...');
     const runRes = await msg({
       type: 'RUN_CODE',
       payload: { autoNext: autoNextCheck.checked }
     });
 
+    setBusy(false);
     if (runRes.error) {
-      setStatus('error', 'Run/Submit failed');
+      setStatus('error', 'Execution error');
       showError(runRes.error);
-      solveBtn.disabled  = false;
-      scrapeBtn.disabled = false;
-      return;
-    }
-
-    if (runRes.submitted && autoNextCheck.checked) {
-      setStatus('done', '✓ Submitted! Moving to next problem...');
-    } else if (runRes.submitted) {
-      setStatus('done', '✓ Code typed, run & submitted!');
     } else {
-      setStatus('done', '✓ Code typed & run! Submit manually if needed.');
+      setStatus('done', '✓ Solved, filled, run & submitted!');
     }
   } else {
-    setStatus('done', '✓ Done! Code typed into editor.');
+    setBusy(false);
+    setStatus('done', '✓ Code filled into editor box!');
   }
-
-  solveBtn.disabled  = false;
-  scrapeBtn.disabled = false;
 });
 
-// --- Copy button ---
+// --- Display Helpers ---
+function displayProblem(prob) {
+  problemTitle.textContent = prob.title || 'Untitled Problem';
+  let meta = prob.detectedLanguage ? `Lang: ${prob.detectedLanguage}` : '';
+  if (prob.constraints) meta += (meta ? ' • ' : '') + 'Constraints detected';
+  if (prob.examples && prob.examples.length) meta += (meta ? ' • ' : '') + `${prob.examples.length} test case(s)`;
+  problemMeta.textContent = meta || prob.url || '';
+  problemCard.style.display = 'block';
+}
+
+function displayCode(code) {
+  generatedCode = code;
+  codeContent.textContent = code;
+  codeBlock.style.display = 'block';
+}
+
+function setBusy(busy) {
+  autoSolveBtn.disabled = busy;
+  scrapeBtn.disabled    = busy;
+  solveBtn.disabled     = busy || !currentProblem;
+}
+
+// --- Copy Button ---
 copyBtn.addEventListener('click', () => {
   if (!generatedCode) return;
   navigator.clipboard.writeText(generatedCode).then(() => {
@@ -217,7 +286,7 @@ copyBtn.addEventListener('click', () => {
 
 // --- Helpers ---
 function setStatus(state, text) {
-  statusDot.className   = `status-dot ${state}`;
+  statusDot.className    = `status-dot ${state}`;
   statusText.textContent = text;
 }
 
