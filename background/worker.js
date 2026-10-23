@@ -35,6 +35,7 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
       switch (msg.type) {
         case 'SCRAPE_PROBLEM': {
           if (!tabId) throw new Error('No SkillRack tab found. Open skillrack.com first.');
+          await solveAdditionCaptcha(tabId);
           const problem = await scrapeTab(tabId);
           sendResponse({ ok: true, problem });
           break;
@@ -56,12 +57,21 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 
         case 'AUTO_SOLVE_AND_FILL': {
           if (!tabId) throw new Error('No SkillRack tab found. Open a problem first.');
+          
+          // 1. Solve any addition sum / captcha before problem
+          await solveAdditionCaptcha(tabId);
+
+          // 2. Scrape problem
           const problem = await scrapeTab(tabId);
           const lang = msg.payload.language || problem.detectedLanguage || 'Python 3';
+
+          // 3. Generate optimal code
           const code = await generateSolution(problem, lang, msg.payload.modelName);
 
+          // 4. Keystroke code into editor
           await fillEditor(tabId, code, msg.payload);
 
+          // 5. Submit 2 times & run if enabled
           let runRes = null;
           if (msg.payload.autoRun) {
             await new Promise(r => setTimeout(r, 600));
@@ -69,6 +79,9 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
               autoNext: msg.payload.autoNext,
               skipIfFailed: msg.payload.skipOnFail
             });
+            if (runRes.passed) {
+              await submitAndNext(tabId, msg.payload.autoNext);
+            }
           }
           sendResponse({ ok: true, problem, code, language: lang, runOutput: runRes?.output, passed: runRes?.passed });
           break;
@@ -76,18 +89,25 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 
         case 'AUTO_PILOT_STEP': {
           if (!tabId) throw new Error('No SkillRack tab found.');
+
+          // Step 1: Detect and solve addition sum / captcha before the question
+          await solveAdditionCaptcha(tabId);
+
+          // Step 2: Scrape problem
           const problem = await scrapeTab(tabId);
           const lang = msg.payload.language || problem.detectedLanguage || 'Python 3';
 
-          // Step 1: Generate initial optimal solution
+          // Step 3: Generate initial optimal solution
           let code = await generateSolution(problem, lang, msg.payload.modelName);
+
+          // Step 4: Keystroke code into editor
           await fillEditor(tabId, code, msg.payload);
           await new Promise(r => setTimeout(r, 600));
 
-          // Step 2: Run & Evaluate test cases
+          // Step 5: Run & Evaluate test cases
           let runRes = await runAndSubmit(tabId, { autoNext: false, skipIfFailed: false });
 
-          // Step 3: Self-Correction (Retry once if failed to achieve maximum score)
+          // Step 6: Self-Correction (Retry once if failed to achieve maximum score)
           if (!runRes.passed && runRes.output) {
             try {
               code = await generateSolution(problem, lang, msg.payload.modelName, runRes.output);
@@ -95,16 +115,17 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
               await new Promise(r => setTimeout(r, 600));
               runRes = await runAndSubmit(tabId, { autoNext: false, skipIfFailed: false });
             } catch (e) {
-              console.warn('Self-correction attempt failed:', e);
+              console.warn('Self-correction failed:', e);
             }
           }
 
-          // Step 4: Submit & Advance, or Skip to Next Problem if unsolvable
+          // Step 7: Double Submit on Pass, or Skip to Next on Failure
           if (runRes.passed) {
+            // Submit 2 times, then advance to next problem
             await submitAndNext(tabId, true);
             sendResponse({ ok: true, status: 'passed', problemTitle: problem.title, output: runRes.output });
           } else {
-            // Cannot solve: go ahead to next problem to keep racking points
+            // Unsolvable: go ahead to next problem so you keep racking points
             await triggerNext(tabId);
             sendResponse({ ok: true, status: 'skipped', problemTitle: problem.title, output: runRes.output, reason: 'Failed test cases' });
           }
@@ -159,11 +180,130 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 async function findSkillRackTabId() {
   const tabs = await chrome.tabs.query({ url: ['https://www.skillrack.com/*', 'https://skillrack.com/*'] });
   if (tabs.length > 0) {
-    const pTab = tabs.find(t => t.url && /codeprogram|solve|test/i.test(t.url));
+    const pTab = tabs.find(t => t.url && /codeprogram|solve|test|tutor/i.test(t.url));
     return (pTab || tabs[0]).id;
   }
   const { activeTabId } = await chrome.storage.session.get('activeTabId');
   return activeTabId || null;
+}
+
+// --- CAPTCHA SOLVER ---
+async function solveAdditionCaptcha(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: checkAndSolveMathCaptcha,
+      world: 'MAIN'
+    });
+
+    const info = results.find(r => r?.result?.found)?.result;
+    if (!info) return { solved: false };
+
+    // Solved via direct text math evaluation
+    if (info.solvedText) {
+      await new Promise(r => setTimeout(r, 1200));
+      return { solved: true, sum: info.sum };
+    }
+
+    // Solved via VLM image reading if captcha is an image
+    if (info.imageDataUrl) {
+      const { groqKey } = await chrome.storage.local.get('groqKey');
+      if (groqKey) {
+        const sumVal = await solveCaptchaWithGroq(groqKey.trim(), info.imageDataUrl);
+        if (sumVal !== null) {
+          await chrome.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            func: (val) => {
+              const cap = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]');
+              if (cap) {
+                cap.value = val;
+                cap.dispatchEvent(new Event('input', { bubbles: true }));
+                cap.dispatchEvent(new Event('change', { bubbles: true }));
+                const btn = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.btn')]
+                  .find(b => /(submit|proceed|verify|continue|ok|enter)/i.test(b.textContent || b.value || ''));
+                if (btn) (btn.closest('button, a, input') || btn).click();
+              }
+            },
+            args: [sumVal],
+            world: 'MAIN'
+          });
+          await new Promise(r => setTimeout(r, 1200));
+          return { solved: true, sum: sumVal };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Captcha solve error:', e);
+  }
+  return { solved: false };
+}
+
+function checkAndSolveMathCaptcha() {
+  const capInput = document.querySelector('#capval, input[name*="cap" i], input[id*="cap" i]');
+  if (!capInput) return { found: false };
+
+  // 1. Text math search in container, parent, or form
+  const container = capInput.closest('form, div, td, table') || document.body;
+  const containerText = container.innerText || '';
+
+  // Look for math addition pattern "A + B"
+  const match = containerText.match(/(\d{1,4})\s*[\+\x2B]\s*(\d{1,4})/);
+  if (match) {
+    const sum = parseInt(match[1], 10) + parseInt(match[2], 10);
+    capInput.value = sum;
+    capInput.dispatchEvent(new Event('input', { bubbles: true }));
+    capInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const btn = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.btn, a')]
+      .find(b => /(submit|proceed|verify|continue|ok|enter|go)/i.test(b.textContent || b.value || ''));
+    if (btn) (btn.closest('button, a, input') || btn).click();
+    return { found: true, solvedText: true, sum };
+  }
+
+  // 2. Check for captcha image
+  const capImg = document.querySelector('img#capimg, img[src*="cap" i], img[id*="cap" i], img[src*="captcha" i]');
+  if (capImg) {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = capImg.naturalWidth || capImg.width || 140;
+      canvas.height = capImg.naturalHeight || capImg.height || 45;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(capImg, 0, 0);
+      return { found: true, imageDataUrl: canvas.toDataURL('image/png') };
+    } catch (e) {}
+  }
+
+  return { found: true, inputOnly: true };
+}
+
+async function solveCaptchaWithGroq(apiKey, dataUrl) {
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'qwen/qwen3.8-27b',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Solve the addition sum in this image (e.g. A + B). Output ONLY the integer sum number. No words, no punctuation.' },
+              { type: 'image_url', image_url: { url: dataUrl } }
+            ]
+          }
+        ],
+        temperature: 0.1,
+        max_tokens: 15
+      })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const txt = data.choices?.[0]?.message?.content?.trim() || '';
+    const num = parseInt(txt.replace(/[^\d]/g, ''), 10);
+    return isNaN(num) ? null : num;
+  } catch (e) {
+    return null;
+  }
 }
 
 // --- CORE ASYNC OPS ---
@@ -323,22 +463,33 @@ async function runAndSubmit(tabId, options) {
   return r;
 }
 
+// Submits twice (Compile/Run + Confirm Final Submit), then advances to next
 async function submitAndNext(tabId, doNext = true) {
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: (autoNext) => {
       const findBtn = (keys) => {
-        return [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.button, a.btn, span.ui-button-text')]
+        return [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.button, a.btn, span.ui-button-text, a')]
           .find(b => keys.some(k => (b.textContent || b.value || '').trim().toLowerCase().includes(k)));
       };
-      const sub = findBtn(['submit', 'process', 'evaluate', 'mark as solved']);
-      if (sub) (sub.closest('button, a, input') || sub).click();
-      if (autoNext) {
-        setTimeout(() => {
-          const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
-          if (nxt) (nxt.closest('button, a, input') || nxt).click();
-        }, 1200);
-      }
+
+      // Submit 1: Trigger Submit / Process
+      const sub1 = findBtn(['submit', 'process', 'evaluate', 'save & submit', 'mark as solved']);
+      if (sub1) (sub1.closest('button, a, input') || sub1).click();
+
+      // Submit 2: Confirm Dialog / Second Submit Click
+      setTimeout(() => {
+        const sub2 = findBtn(['yes', 'confirm', 'ok', 'submit', 'proceed', 'final submit']);
+        if (sub2) (sub2.closest('button, a, input') || sub2).click();
+
+        // Advance to Next Problem
+        if (autoNext) {
+          setTimeout(() => {
+            const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
+            if (nxt) (nxt.closest('button, a, input') || nxt).click();
+          }, 1200);
+        }
+      }, 900);
     },
     args: [doNext],
     world: 'MAIN'
@@ -387,7 +538,7 @@ function initEditorFiller(code, opt) {
             const found = iDoc.querySelector('.ace_editor.ace_dark, .ace_editor');
             if (found) { aceEl = found; break; }
           }
-        } catch(e) {}
+        } catch (e) {}
       }
     }
 
@@ -397,11 +548,11 @@ function initEditorFiller(code, opt) {
       if (aceEl.env && aceEl.env.editor) ed = aceEl.env.editor;
 
       if (!ed && window.ace && typeof window.ace.edit === 'function') {
-        try { ed = window.ace.edit(aceEl.id || aceEl); } catch(e) {}
+        try { ed = window.ace.edit(aceEl.id || aceEl); } catch (e) {}
       }
 
       if (!ed && window.parent?.ace && typeof window.parent.ace.edit === 'function') {
-        try { ed = window.parent.ace.edit(aceEl.id || aceEl); } catch(e) {}
+        try { ed = window.parent.ace.edit(aceEl.id || aceEl); } catch (e) {}
       }
 
       if (!ed && window.editor && typeof window.editor.setValue === 'function') {
@@ -409,11 +560,11 @@ function initEditorFiller(code, opt) {
       }
 
       if (ed) {
-        try { ed.$blockScrolling = Infinity; } catch(e) {}
-        try { ed.focus(); } catch(e) {}
+        try { ed.$blockScrolling = Infinity; } catch (e) {}
+        try { ed.focus(); } catch (e) {}
 
         if (mode === 'typing' && delay > 0) {
-          try { ed.setValue('', -1); } catch(e) {}
+          try { ed.setValue('', -1); } catch (e) {}
 
           const prevB = ed.getBehavioursEnabled ? ed.getBehavioursEnabled() : true;
           if (ed.setBehavioursEnabled) ed.setBehavioursEnabled(false);
@@ -424,12 +575,12 @@ function initEditorFiller(code, opt) {
           function typeNext() {
             if (i >= chars.length) {
               if (ed.setBehavioursEnabled) ed.setBehavioursEnabled(prevB);
-              try { ed.clearSelection(); } catch(e) {}
+              try { ed.clearSelection(); } catch (e) {}
               syncInputs();
               resolve({ ok: true, method: 'ace-typed' });
               return;
             }
-            try { ed.insert(chars[i++]); } catch(e) {}
+            try { ed.insert(chars[i++]); } catch (e) {}
             setTimeout(typeNext, delay);
           }
           typeNext();
@@ -439,7 +590,7 @@ function initEditorFiller(code, opt) {
             ed.setValue('');
             ed.insert(code);
             ed.clearSelection();
-          } catch(e) {
+          } catch (e) {
             ed.setValue(code, -1);
           }
           syncInputs();
@@ -514,26 +665,31 @@ function clickRunSubmit(options) {
       if (out || waited >= 20000) {
         clearInterval(poll);
 
-        // Strict test case verification
         const isPass = /(passed|100%|all test cases|success|correct)/i.test(out) && !/(compilation error|wrong answer|runtime error|syntaxerror|fail)/i.test(out);
-        const isFail = /(failed|wrong answer|compilation error|error|exception|mismatch)/i.test(out);
 
         if (isPass) {
           setTimeout(() => {
+            // First submit click
             const sub = findBtn(['submit', 'process', 'evaluate', 'mark as solved']);
             if (sub) (sub.closest('button, a, input') || sub).click();
-            if (autoNext) {
-              setTimeout(() => {
-                const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
-                if (nxt) (nxt.closest('button, a, input') || nxt).click();
-                resolve({ ok: true, output: out, passed: true, submitted: !!sub, next: !!nxt });
-              }, 1200);
-            } else {
-              resolve({ ok: true, output: out, passed: true, submitted: !!sub });
-            }
+
+            // Second submit click / confirmation
+            setTimeout(() => {
+              const confirmBtn = findBtn(['yes', 'confirm', 'ok', 'submit', 'final submit']);
+              if (confirmBtn) (confirmBtn.closest('button, a, input') || confirmBtn).click();
+
+              if (autoNext) {
+                setTimeout(() => {
+                  const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
+                  if (nxt) (nxt.closest('button, a, input') || nxt).click();
+                  resolve({ ok: true, output: out, passed: true, submitted: true, next: !!nxt });
+                }, 1200);
+              } else {
+                resolve({ ok: true, output: out, passed: true, submitted: true });
+              }
+            }, 800);
           }, 700);
         } else {
-          // Failed or incomplete test cases
           if (skipIfFailed) {
             setTimeout(() => {
               const nxt = findBtn(['next', 'continue', 'skip', 'next question', 'next problem']);
