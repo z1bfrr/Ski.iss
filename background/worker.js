@@ -79,16 +79,17 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
 
         case 'FETCH_MODELS': {
           const { groqKey } = await chrome.storage.local.get('groqKey');
-          const key = msg.payload?.groqKey || groqKey;
+          const key = (msg.payload?.groqKey || groqKey || '').trim().replace(/^["']|["']$/g, '');
           if (!key) throw new Error('Enter Groq API key first.');
           const res = await fetch('https://api.groq.com/openai/v1/models', {
             headers: { Authorization: `Bearer ${key}` }
           });
-          if (!res.ok) throw new Error(`Groq auth error (${res.status})`);
+          if (res.status === 401) throw new Error('Invalid Groq key! Check console.groq.com/keys');
+          if (!res.ok) throw new Error(`Groq error (HTTP ${res.status})`);
           const data = await res.json();
           const models = (data.data || [])
             .map(m => m.id)
-            .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'))
+            .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts') && !id.includes('embed') && !id.includes('safeguard'))
             .sort();
           sendResponse({ ok: true, models });
           break;
@@ -133,10 +134,63 @@ async function scrapeTab(tabId) {
 }
 
 async function generateSolution(problem, language, userModel) {
-  const { groqKey, modelName } = await chrome.storage.local.get(['groqKey', 'modelName']);
+  let { groqKey, modelName } = await chrome.storage.local.get(['groqKey', 'modelName']);
   if (!groqKey) throw new Error('No Groq API key set. Open ⚙ Settings and add your key.');
 
-  const model = userModel || modelName || 'llama-3.3-70b-versatile';
+  const apiKey = groqKey.trim().replace(/^["']|["']$/g, '');
+
+  // 1. Query available models dynamically so we never 404 on deprecated models
+  let modelCandidates = [];
+  try {
+    const mRes = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    if (mRes.status === 401) {
+      throw new Error('Invalid Groq API Key! Please get a new free key from console.groq.com/keys');
+    }
+    if (mRes.ok) {
+      const mData = await mRes.json();
+      const live = (mData.data || [])
+        .map(m => m.id)
+        .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts') && !id.includes('embed') && !id.includes('safeguard'));
+
+      const requested = userModel || modelName;
+      if (requested && live.includes(requested)) {
+        modelCandidates.push(requested);
+      }
+
+      // Priority list of proven CP models
+      const priority = [
+        'llama-3.3-70b-versatile',
+        'openai/gpt-oss-120b',
+        'openai/gpt-oss-20b',
+        'qwen/qwen3.8-27b',
+        'llama3-70b-8192',
+        'llama3-8b-8192',
+        'gemma2-9b-it',
+        'mixtral-8x7b-32768'
+      ];
+      for (const p of priority) {
+        if (live.includes(p) && !modelCandidates.includes(p)) modelCandidates.push(p);
+      }
+      for (const m of live) {
+        if (!modelCandidates.includes(m)) modelCandidates.push(m);
+      }
+    }
+  } catch (e) {
+    if (e.message.includes('Invalid Groq API Key')) throw e;
+  }
+
+  if (modelCandidates.length === 0) {
+    modelCandidates = [
+      userModel || modelName || 'llama-3.3-70b-versatile',
+      'openai/gpt-oss-120b',
+      'openai/gpt-oss-20b',
+      'llama3-70b-8192',
+      'llama3-8b-8192',
+      'gemma2-9b-it'
+    ];
+  }
 
   // Compact prompt to minimize token burn
   const system = `Competitive programmer. Return ONLY raw compilable ${language} code solving the task.
@@ -158,26 +212,45 @@ Java: class Hello. C/C++: standard headers, long long for >10^9. Python: sys.std
   }
   prompt += `Language: ${language}. Code:`;
 
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
-      temperature: 0.1,
-      max_tokens: 1500
-    })
-  });
+  let lastError = null;
+  for (const m of modelCandidates) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: m,
+          messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
+          temperature: 0.1,
+          max_tokens: 1500
+        })
+      });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `HTTP ${res.status} calling ${model}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error?.message || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const code = data.choices?.[0]?.message?.content?.trim();
+      if (!code) throw new Error('Empty response');
+
+      // Auto-save the working model
+      await chrome.storage.local.set({ modelName: m });
+
+      return code.replace(/^```[a-zA-Z0-9_+\-]*\n?/, '').replace(/```\s*$/, '').trim();
+    } catch (e) {
+      lastError = e;
+      if (e.message.includes('does not exist') || e.message.includes('access') || e.message.includes('404')) {
+        continue; // Try next model candidate
+      }
+      if (e.message.includes('Invalid') || e.message.includes('quota') || e.message.includes('rate_limit')) {
+        throw e;
+      }
+    }
   }
 
-  const data = await res.json();
-  const code = data.choices?.[0]?.message?.content?.trim();
-  if (!code) throw new Error('Model returned an empty response.');
-  return code.replace(/^```[a-zA-Z0-9_+\-]*\n?/, '').replace(/```\s*$/, '').trim();
+  throw lastError || new Error('No working Groq model available for this key.');
 }
 
 async function fillEditor(tabId, code, options) {
