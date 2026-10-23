@@ -45,6 +45,7 @@
           <option value="C++">C++</option>
           <option value="Java">Java (class Hello)</option>
           <option value="Python 3" selected>Python 3</option>
+          <option value="SQL">SQL (MySQL / Oracle)</option>
         </select>
       </div>
 
@@ -70,6 +71,18 @@
         </div>
       </div>
 
+      <!-- Autonomous Auto-Pilot Button -->
+      <button class="btn full-glow" id="autoPilotBtn" style="background:#00d2ff;color:#000;box-shadow:0 0 20px #00d2ff40;">
+        🚀 Start Autonomous Auto-Pilot
+      </button>
+
+      <!-- Live Auto-Pilot Stats -->
+      <div class="pilot-stats" id="pilotStats" style="display:none;font-size:11px;font-family:var(--mono);color:var(--text-dim);display:flex;justify-content:space-between;padding:6px 10px;background:var(--surface2);border-radius:var(--radius);border:1px solid var(--border);">
+        <span>Solved: <strong style="color:var(--accent)" id="statSolved">0</strong></span>
+        <span>Skipped: <strong style="color:var(--warning)" id="statSkipped">0</strong></span>
+        <span id="pilotState">Active ⟳</span>
+      </div>
+
       <!-- Action Buttons -->
       <button class="btn primary full-glow" id="autoSolveBtn">
         ⚡ 1-Click Auto Solve &amp; Fill
@@ -82,11 +95,15 @@
       <!-- Auto options -->
       <div class="auto-options">
         <label class="toggle-row">
+          <input type="checkbox" id="skipOnFailCheck" checked>
+          <span class="toggle-label">Skip to next problem if unsolved</span>
+        </label>
+        <label class="toggle-row">
           <input type="checkbox" id="autoRunCheck" checked>
           <span class="toggle-label">Auto Run after code filled</span>
         </label>
         <label class="toggle-row">
-          <input type="checkbox" id="autoNextCheck">
+          <input type="checkbox" id="autoNextCheck" checked>
           <span class="toggle-label">Auto Next problem after submit</span>
         </label>
       </div>

@@ -184,13 +184,13 @@
   for (const sel of langSelects) {
     if (sel.tagName === 'SELECT' && sel.selectedIndex >= 0) {
       const txt = sel.options[sel.selectedIndex]?.text?.trim();
-      if (txt && /c\+\+|java|python|c\b/i.test(txt)) {
+      if (txt && /c\+\+|java|python|sql|mysql|oracle|c\b/i.test(txt)) {
         detectedLanguage = txt;
         break;
       }
     } else if (sel.classList.contains('ui-selectonemenu')) {
       const label = sel.querySelector('.ui-selectonemenu-label');
-      if (label && /c\+\+|java|python|c\b/i.test(label.innerText)) {
+      if (label && /c\+\+|java|python|sql|mysql|oracle|c\b/i.test(label.innerText)) {
         detectedLanguage = label.innerText.trim();
         break;
       }
@@ -202,7 +202,10 @@
     if (/c\+\+/i.test(detectedLanguage)) detectedLanguage = 'C++';
     else if (/java/i.test(detectedLanguage)) detectedLanguage = 'Java';
     else if (/python/i.test(detectedLanguage)) detectedLanguage = 'Python 3';
+    else if (/sql|mysql|oracle/i.test(detectedLanguage)) detectedLanguage = 'SQL';
     else if (/\bc\b/i.test(detectedLanguage)) detectedLanguage = 'C';
+  } else if (/sql|mysql|database|dbms/i.test(document.title + ' ' + window.location.href)) {
+    detectedLanguage = 'SQL';
   }
 
   return {

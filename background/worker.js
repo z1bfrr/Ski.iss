@@ -15,7 +15,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     url: chrome.runtime.getURL('popup/popup.html'),
     type: 'popup',
     width: 440,
-    height: 660,
+    height: 700,
     focused: true
   });
   popupWindowId = win.id;
@@ -41,8 +41,8 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
         }
 
         case 'GENERATE_CODE': {
-          const { problem, language, modelName } = msg.payload;
-          const code = await generateSolution(problem, language, modelName);
+          const { problem, language, modelName, errorFeedback } = msg.payload;
+          const code = await generateSolution(problem, language, modelName, errorFeedback);
           sendResponse({ ok: true, code });
           break;
         }
@@ -60,23 +60,60 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
           const lang = msg.payload.language || problem.detectedLanguage || 'Python 3';
           const code = await generateSolution(problem, lang, msg.payload.modelName);
 
-          // Type code directly into the SkillRack Ace editor
           await fillEditor(tabId, code, msg.payload);
 
-          let runOutput = null;
+          let runRes = null;
           if (msg.payload.autoRun) {
-            // Short grace pause so Ace finishes rendering internal model before running
             await new Promise(r => setTimeout(r, 600));
-            const runRes = await runAndSubmit(tabId, msg.payload.autoNext);
-            runOutput = runRes?.output;
+            runRes = await runAndSubmit(tabId, {
+              autoNext: msg.payload.autoNext,
+              skipIfFailed: msg.payload.skipOnFail
+            });
           }
-          sendResponse({ ok: true, problem, code, language: lang, runOutput });
+          sendResponse({ ok: true, problem, code, language: lang, runOutput: runRes?.output, passed: runRes?.passed });
+          break;
+        }
+
+        case 'AUTO_PILOT_STEP': {
+          if (!tabId) throw new Error('No SkillRack tab found.');
+          const problem = await scrapeTab(tabId);
+          const lang = msg.payload.language || problem.detectedLanguage || 'Python 3';
+
+          // Step 1: Generate initial optimal solution
+          let code = await generateSolution(problem, lang, msg.payload.modelName);
+          await fillEditor(tabId, code, msg.payload);
+          await new Promise(r => setTimeout(r, 600));
+
+          // Step 2: Run & Evaluate test cases
+          let runRes = await runAndSubmit(tabId, { autoNext: false, skipIfFailed: false });
+
+          // Step 3: Self-Correction (Retry once if failed to achieve maximum score)
+          if (!runRes.passed && runRes.output) {
+            try {
+              code = await generateSolution(problem, lang, msg.payload.modelName, runRes.output);
+              await fillEditor(tabId, code, msg.payload);
+              await new Promise(r => setTimeout(r, 600));
+              runRes = await runAndSubmit(tabId, { autoNext: false, skipIfFailed: false });
+            } catch (e) {
+              console.warn('Self-correction attempt failed:', e);
+            }
+          }
+
+          // Step 4: Submit & Advance, or Skip to Next Problem if unsolvable
+          if (runRes.passed) {
+            await submitAndNext(tabId, true);
+            sendResponse({ ok: true, status: 'passed', problemTitle: problem.title, output: runRes.output });
+          } else {
+            // Cannot solve: go ahead to next problem to keep racking points
+            await triggerNext(tabId);
+            sendResponse({ ok: true, status: 'skipped', problemTitle: problem.title, output: runRes.output, reason: 'Failed test cases' });
+          }
           break;
         }
 
         case 'RUN_CODE': {
           if (!tabId) throw new Error('No SkillRack tab found.');
-          const result = await runAndSubmit(tabId, msg.payload.autoNext);
+          const result = await runAndSubmit(tabId, msg.payload);
           sendResponse({ ok: true, ...result });
           break;
         }
@@ -100,7 +137,7 @@ chrome.runtime.onMessage.addListener((msg, _, sendResponse) => {
         }
 
         case 'GET_SETTINGS': {
-          const s = await chrome.storage.local.get(['groqKey', 'typingSpeed', 'language', 'fillMode', 'modelName']);
+          const s = await chrome.storage.local.get(['groqKey', 'typingSpeed', 'language', 'fillMode', 'modelName', 'skipOnFail']);
           sendResponse(s);
           break;
         }
@@ -137,7 +174,7 @@ async function scrapeTab(tabId) {
   return p;
 }
 
-async function generateSolution(problem, language, userModel) {
+async function generateSolution(problem, language, userModel, errorFeedback = null) {
   let { groqKey, modelName } = await chrome.storage.local.get(['groqKey', 'modelName']);
   if (!groqKey) throw new Error('No Groq API key set. Open ⚙ Settings and add your key.');
 
@@ -194,9 +231,13 @@ async function generateSolution(problem, language, userModel) {
     ];
   }
 
-  const system = `Competitive programmer. Return ONLY raw compilable ${language} code solving the task.
-No markdown fences, no comments, no explanation. Stdin->Stdout.
-Java: class Hello. C/C++: standard headers, long long for >10^9. Python: sys.stdin.read().split().`;
+  const system = `Competitive programming expert. Return ONLY raw, compilable ${language} code solving the problem for 100% score.
+No markdown backticks, no comments, no explanation.
+Language specific requirements:
+- Java: public class Hello with public static void main.
+- C/C++: include standard libraries (<stdio.h>, <stdlib.h>, <string.h>, <math.h> / <iostream>, <vector>, <string>, <algorithm>), use long long for numbers > 10^9.
+- Python 3: handle fast I/O via sys.stdin.read().split() and EOF safely.
+- SQL: ONLY executable standard SQL query ending with semicolon. Handle NULL values, proper JOIN types, GROUP BY, and column alias matching.`;
 
   let prompt = `${problem.title ? `Title: ${problem.title}\n` : ''}${problem.statement || ''}\n`;
   if (problem.constraints) prompt += `Limits: ${problem.constraints}\n`;
@@ -210,7 +251,12 @@ Java: class Hello. C/C++: standard headers, long long for >10^9. Python: sys.std
   } else if (problem.sampleInput || problem.sampleOutput) {
     prompt += `Sample:\nIn:${problem.sampleInput || ''}\nOut:${problem.sampleOutput || ''}\n`;
   }
-  prompt += `Language: ${language}. Code:`;
+
+  if (errorFeedback) {
+    prompt += `\nNOTE: Previous submission failed with output/error:\n${errorFeedback.slice(0, 400)}\nFix all edge cases and produce 100% working code:`;
+  } else {
+    prompt += `Language: ${language}. Code:`;
+  }
 
   let lastError = null;
   for (const m of modelCandidates) {
@@ -265,16 +311,53 @@ async function fillEditor(tabId, code, options) {
   }
 }
 
-async function runAndSubmit(tabId, autoNext) {
+async function runAndSubmit(tabId, options) {
   const results = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: clickRunSubmit,
-    args: [autoNext || false],
+    args: [options || {}],
     world: 'MAIN'
   });
   const r = results.find(x => x?.result?.ok)?.result;
   if (!r) throw new Error('Run button not found on page.');
   return r;
+}
+
+async function submitAndNext(tabId, doNext = true) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: (autoNext) => {
+      const findBtn = (keys) => {
+        return [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.button, a.btn, span.ui-button-text')]
+          .find(b => keys.some(k => (b.textContent || b.value || '').trim().toLowerCase().includes(k)));
+      };
+      const sub = findBtn(['submit', 'process', 'evaluate', 'mark as solved']);
+      if (sub) (sub.closest('button, a, input') || sub).click();
+      if (autoNext) {
+        setTimeout(() => {
+          const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
+          if (nxt) (nxt.closest('button, a, input') || nxt).click();
+        }, 1200);
+      }
+    },
+    args: [doNext],
+    world: 'MAIN'
+  });
+}
+
+async function triggerNext(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => {
+      const findBtn = (keys) => {
+        return [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.button, a.btn, span.ui-button-text, a')]
+          .find(b => keys.some(k => (b.textContent || b.value || '').trim().toLowerCase().includes(k)));
+      };
+      const nxt = findBtn(['next', 'continue', 'skip', 'next question', 'next problem']);
+      if (nxt) (nxt.closest('button, a, input') || nxt).click();
+    },
+    world: 'MAIN'
+  });
 }
 
 // ── Injected in target page across all frames (MAIN world) ──
@@ -283,7 +366,6 @@ function initEditorFiller(code, opt) {
     const mode = opt?.mode || 'typing';
     const delay = opt?.delayMs || 6;
 
-    // Helper: sync form textareas so backend submission receives new code
     const syncInputs = () => {
       document.querySelectorAll('textarea, input[type="hidden"], input[type="text"]').forEach(el => {
         const n = `${el.id} ${el.name} ${el.className}`.toLowerCase();
@@ -295,10 +377,8 @@ function initEditorFiller(code, opt) {
       });
     };
 
-    // 1. Locate Ace Editor in current frame
     let aceEl = document.querySelector('.ace_editor.ace_dark, .ace_editor, div[class*="ace_editor"]');
 
-    // Also check if Ace is inside an iframe in current frame
     if (!aceEl) {
       for (const iframe of document.querySelectorAll('iframe')) {
         try {
@@ -314,20 +394,16 @@ function initEditorFiller(code, opt) {
     if (aceEl) {
       let ed = null;
 
-      // Method A: aceEl.env.editor
       if (aceEl.env && aceEl.env.editor) ed = aceEl.env.editor;
 
-      // Method B: window.ace.edit(aceEl.id) or window.ace.edit(aceEl)
       if (!ed && window.ace && typeof window.ace.edit === 'function') {
         try { ed = window.ace.edit(aceEl.id || aceEl); } catch(e) {}
       }
 
-      // Method C: parent / top window ace
       if (!ed && window.parent?.ace && typeof window.parent.ace.edit === 'function') {
         try { ed = window.parent.ace.edit(aceEl.id || aceEl); } catch(e) {}
       }
 
-      // Method D: window.editor
       if (!ed && window.editor && typeof window.editor.setValue === 'function') {
         ed = window.editor;
       }
@@ -337,10 +413,8 @@ function initEditorFiller(code, opt) {
         try { ed.focus(); } catch(e) {}
 
         if (mode === 'typing' && delay > 0) {
-          // Clear editor first
           try { ed.setValue('', -1); } catch(e) {}
 
-          // Disable auto-close brackets so Ace doesn't insert extra }} or quotes
           const prevB = ed.getBehavioursEnabled ? ed.getBehavioursEnabled() : true;
           if (ed.setBehavioursEnabled) ed.setBehavioursEnabled(false);
 
@@ -361,7 +435,6 @@ function initEditorFiller(code, opt) {
           typeNext();
           return;
         } else {
-          // Instant Insert
           try {
             ed.setValue('');
             ed.insert(code);
@@ -375,7 +448,6 @@ function initEditorFiller(code, opt) {
         }
       }
 
-      // Method E: Direct typing into Ace's text input element
       const aceInput = aceEl.querySelector('textarea.ace_text-input') || aceEl.querySelector('textarea');
       if (aceInput) {
         aceEl.click();
@@ -393,7 +465,6 @@ function initEditorFiller(code, opt) {
       }
     }
 
-    // 2. CodeMirror support
     const cmEl = document.querySelector('.CodeMirror');
     if (cmEl && cmEl.CodeMirror) {
       cmEl.CodeMirror.setValue(code);
@@ -402,7 +473,6 @@ function initEditorFiller(code, opt) {
       return;
     }
 
-    // 3. Fallback ONLY if element is an explicit code textarea
     const codeTa = [...document.querySelectorAll('textarea')].find(t => {
       if (t.classList.contains('ace_text-input')) return false;
       const k = `${t.id} ${t.name} ${t.className}`.toLowerCase();
@@ -417,15 +487,17 @@ function initEditorFiller(code, opt) {
       return;
     }
 
-    // Skip frames that don't have a code editor
     resolve({ ok: false, skipped: true });
   });
 }
 
-function clickRunSubmit(autoNext) {
+function clickRunSubmit(options) {
   return new Promise((resolve) => {
+    const autoNext = typeof options === 'boolean' ? options : !!options?.autoNext;
+    const skipIfFailed = typeof options === 'object' ? !!options?.skipIfFailed : false;
+
     const findBtn = (keys) => {
-      return [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.button, a.btn, span.ui-button-text')]
+      return [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a.button, a.btn, span.ui-button-text, a')]
         .find(b => keys.some(k => (b.textContent || b.value || '').trim().toLowerCase().includes(k)));
     };
 
@@ -441,19 +513,37 @@ function clickRunSubmit(autoNext) {
 
       if (out || waited >= 20000) {
         clearInterval(poll);
-        setTimeout(() => {
-          const sub = findBtn(['submit', 'process', 'evaluate']);
-          if (sub) (sub.closest('button, a, input') || sub).click();
-          if (autoNext) {
+
+        // Strict test case verification
+        const isPass = /(passed|100%|all test cases|success|correct)/i.test(out) && !/(compilation error|wrong answer|runtime error|syntaxerror|fail)/i.test(out);
+        const isFail = /(failed|wrong answer|compilation error|error|exception|mismatch)/i.test(out);
+
+        if (isPass) {
+          setTimeout(() => {
+            const sub = findBtn(['submit', 'process', 'evaluate', 'mark as solved']);
+            if (sub) (sub.closest('button, a, input') || sub).click();
+            if (autoNext) {
+              setTimeout(() => {
+                const nxt = findBtn(['next', 'continue', 'next question', 'next problem']);
+                if (nxt) (nxt.closest('button, a, input') || nxt).click();
+                resolve({ ok: true, output: out, passed: true, submitted: !!sub, next: !!nxt });
+              }, 1200);
+            } else {
+              resolve({ ok: true, output: out, passed: true, submitted: !!sub });
+            }
+          }, 700);
+        } else {
+          // Failed or incomplete test cases
+          if (skipIfFailed) {
             setTimeout(() => {
-              const nxt = findBtn(['next', 'continue']);
+              const nxt = findBtn(['next', 'continue', 'skip', 'next question', 'next problem']);
               if (nxt) (nxt.closest('button, a, input') || nxt).click();
-              resolve({ ok: true, output: out, submitted: !!sub, next: !!nxt });
-            }, 1200);
+              resolve({ ok: true, output: out, passed: false, submitted: false, skippedNext: true });
+            }, 800);
           } else {
-            resolve({ ok: true, output: out, submitted: !!sub });
+            resolve({ ok: true, output: out, passed: false, submitted: false, skippedNext: false });
           }
-        }, 700);
+        }
       }
     }, 500);
   });

@@ -10,6 +10,11 @@ const statusText     = $('statusText');
 const problemCard    = $('problemCard');
 const problemTitle   = $('problemTitle');
 const problemMeta    = $('problemMeta');
+const autoPilotBtn   = $('autoPilotBtn');
+const pilotStats     = $('pilotStats');
+const statSolved     = $('statSolved');
+const statSkipped    = $('statSkipped');
+const pilotState     = $('pilotState');
 const autoSolveBtn   = $('autoSolveBtn');
 const scrapeBtn      = $('scrapeBtn');
 const langSelect     = $('langSelect');
@@ -30,8 +35,13 @@ const toggleApiKey   = $('toggleApiKey');
 const modelSelect    = $('modelSelect');
 const refreshModelsBtn = $('refreshModelsBtn');
 const saveSettingsBtn= $('saveSettingsBtn');
+const skipOnFailCheck= $('skipOnFailCheck');
 const autoRunCheck   = $('autoRunCheck');
 const autoNextCheck  = $('autoNextCheck');
+
+let isAutoPilot = false;
+let solvedCount = 0;
+let skippedCount = 0;
 
 // Init
 document.addEventListener('DOMContentLoaded', async () => {
@@ -107,6 +117,69 @@ refreshModelsBtn.addEventListener('click', async () => {
 speedSlider.addEventListener('input', () => {
   speedLabel.textContent = `${speedSlider.value}ms / char`;
   msg({ type: 'SAVE_SETTINGS', payload: { typingSpeed: +speedSlider.value } });
+});
+
+// Autonomous Auto-Pilot Controller
+autoPilotBtn.addEventListener('click', async () => {
+  if (isAutoPilot) {
+    // Stop
+    isAutoPilot = false;
+    autoPilotBtn.textContent = '🚀 Start Autonomous Auto-Pilot';
+    autoPilotBtn.style.background = '#00d2ff';
+    autoPilotBtn.style.color = '#000';
+    pilotState.textContent = 'Stopped';
+    setStatus('idle', 'Auto-pilot stopped');
+    return;
+  }
+
+  // Start
+  isAutoPilot = true;
+  autoPilotBtn.textContent = '⏹ Stop Auto-Pilot';
+  autoPilotBtn.style.background = '#ff4d6d';
+  autoPilotBtn.style.color = '#fff';
+  pilotStats.style.display = 'flex';
+  hideError();
+
+  while (isAutoPilot) {
+    pilotState.textContent = 'Solving ⟳';
+    setStatus('running', 'Auto-pilot: solving current problem...');
+
+    const res = await msg({
+      type: 'AUTO_PILOT_STEP',
+      payload: {
+        language: langSelect.value,
+        fillMode: fillModeSelect.value,
+        typingSpeed: +speedSlider.value,
+        modelName: modelSelect.value,
+        skipOnFail: skipOnFailCheck.checked
+      }
+    });
+
+    if (!isAutoPilot) break;
+
+    if (res.error) {
+      pilotState.textContent = 'Error (3s retry)...';
+      setStatus('error', `Auto-pilot: ${res.error}`);
+      await new Promise(r => setTimeout(r, 3000));
+      continue;
+    }
+
+    if (res.status === 'passed') {
+      solvedCount++;
+      statSolved.textContent = solvedCount;
+      pilotState.textContent = 'Passed ✓ (Next)';
+      setStatus('done', `Solved: ${res.problemTitle || 'Problem'}`);
+    } else {
+      skippedCount++;
+      statSkipped.textContent = skippedCount;
+      pilotState.textContent = 'Skipped ⏭ (Next)';
+      setStatus('running', `Skipped: ${res.problemTitle || 'Problem'}`);
+    }
+
+    // Wait 2.5s for SkillRack page transition to complete
+    pilotState.textContent = 'Loading next...';
+    await new Promise(r => setTimeout(r, 2500));
+  }
 });
 
 // Auto-Solve & Fill (Core Flow)
